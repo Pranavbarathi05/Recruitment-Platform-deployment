@@ -1,12 +1,12 @@
 # Never commit real secrets
 .env
+.mcp.json
 
 # Python caches
 __pycache__/
 *.pyc
 *.pyo
 
-# IDE
 .vscode/
 .idea/
 
