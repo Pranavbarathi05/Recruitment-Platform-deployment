@@ -12,5 +12,3 @@ __pycache__/
 # Docker override files (local tweaks)
 docker-compose.override.yml
 
-# MCP / local AI tooling
-.mcp.json
