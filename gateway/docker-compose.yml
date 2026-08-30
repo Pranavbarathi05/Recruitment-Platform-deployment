@@ -1,0 +1,135 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Recruitment Platform – Phase 1: Gateway Foundation
+# ══════════════════════════════════════════════════════════════════════════════
+# Services:
+#   traefik      – reverse proxy / load balancer
+#   gateway-api  – FastAPI service routed at /api/*
+#   backend-1    – dummy backend (pool member 1)
+#   backend-2    – dummy backend (pool member 2)
+#
+# Routing:
+#   GET /api/* → gateway-api
+#   GET /      → backend-1 or backend-2 (round-robin)
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── Traefik reverse proxy ─────────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "${TRAEFIK_HTTP_PORT:-80}:80"          # public HTTP
+      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"  # Traefik dashboard (dev only)
+    volumes:
+      # Mount Docker socket so Traefik can read container labels
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Static configuration
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+    networks:
+      - gateway_net
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      # Expose the dashboard via Traefik itself (optional, for /dashboard)
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+
+  # ── Gateway API (FastAPI) ─────────────────────────────────────────────────
+  gateway-api:
+    build:
+      context: ./gateway-api
+      dockerfile: Dockerfile
+    container_name: gateway-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_VERSION: ${APP_VERSION:-0.1.0}
+    networks:
+      - gateway_net
+    # No host port needed – Traefik handles external traffic
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    labels:
+      - "traefik.enable=true"
+      # Router: match /api and /api/* prefix
+      - "traefik.http.routers.gateway-api.rule=PathPrefix(`/api`)"
+      - "traefik.http.routers.gateway-api.entrypoints=web"
+      - "traefik.http.routers.gateway-api.priority=10"
+      - "traefik.http.services.gateway-api.loadbalancer.server.port=8000"
+
+  # ── Dummy Backend 1 ───────────────────────────────────────────────────────
+  backend-1:
+    build:
+      context: ./test-backend
+      dockerfile: Dockerfile
+    container_name: backend-1
+    restart: unless-stopped
+    environment:
+      BACKEND_NAME: backend-1
+      BACKEND_PORT: ${BACKEND_PORT:-8000}
+    networks:
+      - gateway_net
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      # Both backends share the same router + service for round-robin
+      - "traefik.http.routers.backends.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.backends.entrypoints=web"
+      - "traefik.http.routers.backends.priority=1"
+      - "traefik.http.services.backends.loadbalancer.server.port=8000"
+
+  # ── Dummy Backend 2 ───────────────────────────────────────────────────────
+  backend-2:
+    build:
+      context: ./test-backend
+      dockerfile: Dockerfile
+    container_name: backend-2
+    restart: unless-stopped
+    environment:
+      BACKEND_NAME: backend-2
+      BACKEND_PORT: ${BACKEND_PORT:-8000}
+    networks:
+      - gateway_net
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      # Must reference the SAME service name as backend-1 for load balancing
+      - "traefik.http.routers.backends.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.backends.entrypoints=web"
+      - "traefik.http.routers.backends.priority=1"
+      - "traefik.http.services.backends.loadbalancer.server.port=8000"
+
+# ── Shared network ────────────────────────────────────────────────────────────
+networks:
+  gateway_net:
+    driver: bridge

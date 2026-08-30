@@ -1,0 +1,14 @@
+# Never commit real secrets
+.env
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# Docker override files (local tweaks)
+docker-compose.override.yml
