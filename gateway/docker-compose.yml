@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Recruitment Platform – Phase 1: Gateway Foundation
+# Recruitment Platform – Phase 2: Gateway Session / Control Plane
 # ══════════════════════════════════════════════════════════════════════════════
 # Services:
 #   traefik      – reverse proxy / load balancer
@@ -50,7 +50,9 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-development}
-      APP_VERSION: ${APP_VERSION:-0.1.0}
+      APP_VERSION: ${APP_VERSION:-0.2.0}
+      SESSION_TIMEOUT_SECONDS: ${SESSION_TIMEOUT_SECONDS:-300}
+      STALE_CHECK_INTERVAL_SECONDS: ${STALE_CHECK_INTERVAL_SECONDS:-60}
     networks:
       - gateway_net
     # No host port needed – Traefik handles external traffic

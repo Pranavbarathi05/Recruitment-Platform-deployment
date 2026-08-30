@@ -6,7 +6,7 @@ providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
-    network: gateway_net
+    network: gateway_gateway_net
 
 api:
   dashboard: true
