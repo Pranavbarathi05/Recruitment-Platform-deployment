@@ -1,6 +1,5 @@
 # Never commit real secrets
 .env
-.mcp.json
 
 # Python caches
 __pycache__/
@@ -12,3 +11,6 @@ __pycache__/
 
 # Docker override files (local tweaks)
 docker-compose.override.yml
+
+# MCP / local AI tooling
+.mcp.json
