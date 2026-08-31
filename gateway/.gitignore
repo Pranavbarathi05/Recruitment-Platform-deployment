@@ -12,3 +12,6 @@ __pycache__/
 # Docker override files (local tweaks)
 docker-compose.override.yml
 
+
+# Traefik dynamic config (generated from template)
+traefik/dynamic.yml

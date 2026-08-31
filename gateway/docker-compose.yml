@@ -1,19 +1,16 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Recruitment Platform – Phase 3: Gateway + Application Deployment
+# Recruitment Platform – Gateway (Phase 2: LAN Deployment)
 # ══════════════════════════════════════════════════════════════════════════════
 # Services:
 #   traefik       – reverse proxy / load balancer (entry point)
 #   gateway-api   – session control plane, health, admin (/api/*)
-#   recruit-app   – existing dsc-recruit backend (all other routes)
 #
 # Routing:
 #   GET /api/*        → gateway-api  (priority 10, control plane)
-#   GET /             → recruit-app  (priority 1, application)
-#   GET /questions/*  → recruit-app  (implicit via priority 1)
+#   GET /*            → App 1 via LAN (priority 1, external service)
 #
-# Network:
-#   gateway_net – private Docker bridge network
-#   Only Traefik's port 80 is exposed to the host.
+# App 1 is on a SEPARATE PHYSICAL MACHINE (System 2).
+# Its address is configured via APP1_URL in .env.
 # ══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -23,13 +20,35 @@ services:
     image: traefik:v3.1
     container_name: traefik
     restart: unless-stopped
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - |
+        cat > /etc/traefik/dynamic.yml << DYNEOF
+        http:
+          services:
+            app1-backend:
+              loadBalancer:
+                servers:
+                  - url: "$APP1_URL"
+          routers:
+            app1-external:
+              rule: "PathPrefix(\`/\`)"
+              entryPoints:
+                - web
+              service: app1-backend
+              priority: 1
+        DYNEOF
+        exec traefik --configFile=/etc/traefik/traefik.yml
+    environment:
+      APP1_URL: ${APP1_URL:-http://host.docker.internal:8002}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "${TRAEFIK_HTTP_PORT:-80}:80"          # public HTTP
-      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"  # Traefik dashboard (dev only)
+      - "${TRAEFIK_HTTP_PORT:-80}:80"
+      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
     volumes:
-      # Mount Docker socket so Traefik can read container labels
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Static configuration
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
     networks:
       - gateway_net
@@ -41,13 +60,10 @@ services:
       start_period: 10s
     labels:
       - "traefik.enable=true"
-      # Expose the dashboard via Traefik itself (optional, for /dashboard)
       - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.localhost`)"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
 
   # ── Gateway API (FastAPI) ─────────────────────────────────────────────────
-  # Handles session lifecycle, admin endpoints, and gateway health.
-  # All routes are under /api/* prefix.
   gateway-api:
     build:
       context: ./gateway-api
@@ -61,7 +77,6 @@ services:
       STALE_CHECK_INTERVAL_SECONDS: ${STALE_CHECK_INTERVAL_SECONDS:-60}
     networks:
       - gateway_net
-    # No host port needed – Traefik handles external traffic
     expose:
       - "8000"
     healthcheck:
@@ -73,63 +88,17 @@ services:
       start_period: 15s
     labels:
       - "traefik.enable=true"
-      # Router: match /api and /api/* prefix
       - "traefik.http.routers.gateway-api.rule=PathPrefix(`/api`)"
       - "traefik.http.routers.gateway-api.entrypoints=web"
       - "traefik.http.routers.gateway-api.priority=10"
       - "traefik.http.services.gateway-api.loadbalancer.server.port=8000"
 
-  # ── Recruit App (existing dsc-recruit backend) ────────────────────────────
-  # The EXISTING application backend, deployed as-is.
-  # Handles all non-/api routes: root health, domains, assessment, submission.
-  #
-  # NOTE: The recruit-app requires Supabase environment variables to start.
-  # For the demo, set these in .env or provide dummy values.
-  # The app will start but database operations will fail without real Supabase credentials.
-  recruit-app:
-    build:
-      context: ..
-      dockerfile: gateway/recruit-app/Dockerfile
-    container_name: recruit-app
-    restart: unless-stopped
-    environment:
-      # ── Supabase (REQUIRED – app will not start without these) ──
-      SUPABASE_URL: ${SUPABASE_URL:-https://your-project.supabase.co}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-your-service-role-key}
-      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-your-jwt-secret}
-      # ── CORS ──
-      CORS_ORIGINS: ${RECRUIT_CORS_ORIGINS:-http://localhost:80,http://localhost:5173}
-      # ── Server ──
-      HOST: "0.0.0.0"
-      PORT: "8000"
-    networks:
-      - gateway_net
-    expose:
-      - "8000"
-    healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    labels:
-      - "traefik.enable=true"
-      # Catch-all router: everything NOT matched by /api goes here
-      - "traefik.http.routers.recruit-app.rule=PathPrefix(`/`)"
-      - "traefik.http.routers.recruit-app.entrypoints=web"
-      - "traefik.http.routers.recruit-app.priority=1"
-      - "traefik.http.services.recruit-app.loadbalancer.server.port=8000"
-
-# ── Compiler 1 (external service) ───────────────────────────────────────────
-# Compiler 1 runs in its own compose stack (compiler-1/docker-compose.yml).
-# For integration, it must be reachable from the gateway network.
+# ── App 1 (External Service) ────────────────────────────────────────────────
+# App 1 runs on System 2 (separate physical machine).
+# Its address is configured via APP1_URL in .env.
 #
-# LOCAL: Use COMPILER_URL=http://compiler-1:8000 (Docker service name)
-# DEMO:  Use COMPILER_URL=http://<compiler-host>:8001 (LAN address)
-#
-# To connect Compiler 1 to the gateway network for local testing:
-#   docker network connect gateway_gateway_net compiler-1
+# For LAN deployment:  APP1_URL=http://<APP1_LAN_IP>:8002
+# For local testing:   APP1_URL=http://host.docker.internal:8002
 
 # ── Shared network ────────────────────────────────────────────────────────────
 networks:

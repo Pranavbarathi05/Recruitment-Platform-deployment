@@ -1,0 +1,41 @@
+# Docker build context exclusions (project root)
+# Used by gateway/app-1/Dockerfile
+
+# Git
+.git/
+.gitignore
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+venv/
+.venv/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+
+# Gateway infrastructure (not needed in App 1 image)
+gateway/gateway-api/
+gateway/compiler-1/
+gateway/compiler_client/
+gateway/traefik/
+gateway/test-backend/
+gateway/recruit-app/
+gateway/app-1/
+gateway/tests/
+gateway/.venv-integration/
+gateway/.pytest_cache/
+
+# Freebuff platform metadata
+.freebuff/
+
+# Documentation
+*.md

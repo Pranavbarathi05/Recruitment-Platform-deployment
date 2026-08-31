@@ -1,0 +1,46 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# App 1 — Standalone Docker Compose
+#
+# Runs the dsc-recruit backend independently from the Gateway.
+# Does NOT require the Gateway, Traefik, Compiler, or any other service.
+#
+# For LAN deployment, App 1 listens on 0.0.0.0:8001 so the Gateway
+# machine can reach it over the network.
+#
+# Usage:
+#   cp .env.example .env
+#   # Edit .env with real Supabase credentials
+#   docker compose up -d --build
+#   curl http://localhost:8001/
+#   docker compose down
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  app-1:
+    build:
+      context: ../..
+      dockerfile: gateway/app-1/Dockerfile
+    container_name: app-1
+    restart: unless-stopped
+    environment:
+      # ── Supabase (REQUIRED – app will not start without these) ──
+      SUPABASE_URL: ${SUPABASE_URL:-https://your-project.supabase.co}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-your-service-role-key}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-your-jwt-secret}
+      # ── CORS ──
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:80,http://localhost:5173}
+      # ── Server ──
+      HOST: "0.0.0.0"
+      PORT: "8000"
+    ports:
+      # Host port 8002 → Container port 8000
+      # For LAN: Gateway reaches App 1 at <APP1_LAN_IP>:8002
+      - "${APP1_HOST_PORT:-8002}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
