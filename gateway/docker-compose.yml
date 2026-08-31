@@ -1,15 +1,19 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Recruitment Platform – Phase 2: Gateway Session / Control Plane
+# Recruitment Platform – Phase 3: Gateway + Application Deployment
 # ══════════════════════════════════════════════════════════════════════════════
 # Services:
-#   traefik      – reverse proxy / load balancer
-#   gateway-api  – FastAPI service routed at /api/*
-#   backend-1    – dummy backend (pool member 1)
-#   backend-2    – dummy backend (pool member 2)
+#   traefik       – reverse proxy / load balancer (entry point)
+#   gateway-api   – session control plane, health, admin (/api/*)
+#   recruit-app   – existing dsc-recruit backend (all other routes)
 #
 # Routing:
-#   GET /api/* → gateway-api
-#   GET /      → backend-1 or backend-2 (round-robin)
+#   GET /api/*        → gateway-api  (priority 10, control plane)
+#   GET /             → recruit-app  (priority 1, application)
+#   GET /questions/*  → recruit-app  (implicit via priority 1)
+#
+# Network:
+#   gateway_net – private Docker bridge network
+#   Only Traefik's port 80 is exposed to the host.
 # ══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -42,6 +46,8 @@ services:
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
 
   # ── Gateway API (FastAPI) ─────────────────────────────────────────────────
+  # Handles session lifecycle, admin endpoints, and gateway health.
+  # All routes are under /api/* prefix.
   gateway-api:
     build:
       context: ./gateway-api
@@ -50,7 +56,7 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-development}
-      APP_VERSION: ${APP_VERSION:-0.2.0}
+      APP_VERSION: ${APP_VERSION:-0.3.0}
       SESSION_TIMEOUT_SECONDS: ${SESSION_TIMEOUT_SECONDS:-300}
       STALE_CHECK_INTERVAL_SECONDS: ${STALE_CHECK_INTERVAL_SECONDS:-60}
     networks:
@@ -73,63 +79,47 @@ services:
       - "traefik.http.routers.gateway-api.priority=10"
       - "traefik.http.services.gateway-api.loadbalancer.server.port=8000"
 
-  # ── Dummy Backend 1 ───────────────────────────────────────────────────────
-  backend-1:
+  # ── Recruit App (existing dsc-recruit backend) ────────────────────────────
+  # The EXISTING application backend, deployed as-is.
+  # Handles all non-/api routes: root health, domains, assessment, submission.
+  #
+  # NOTE: The recruit-app requires Supabase environment variables to start.
+  # For the demo, set these in .env or provide dummy values.
+  # The app will start but database operations will fail without real Supabase credentials.
+  recruit-app:
     build:
-      context: ./test-backend
-      dockerfile: Dockerfile
-    container_name: backend-1
+      context: ..
+      dockerfile: gateway/recruit-app/Dockerfile
+    container_name: recruit-app
     restart: unless-stopped
     environment:
-      BACKEND_NAME: backend-1
-      BACKEND_PORT: ${BACKEND_PORT:-8000}
+      # ── Supabase (REQUIRED – app will not start without these) ──
+      SUPABASE_URL: ${SUPABASE_URL:-https://your-project.supabase.co}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-your-service-role-key}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-your-jwt-secret}
+      # ── CORS ──
+      CORS_ORIGINS: ${RECRUIT_CORS_ORIGINS:-http://localhost:80,http://localhost:5173}
+      # ── Server ──
+      HOST: "0.0.0.0"
+      PORT: "8000"
     networks:
       - gateway_net
     expose:
       - "8000"
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 15s
     labels:
       - "traefik.enable=true"
-      # Both backends share the same router + service for round-robin
-      - "traefik.http.routers.backends.rule=PathPrefix(`/`)"
-      - "traefik.http.routers.backends.entrypoints=web"
-      - "traefik.http.routers.backends.priority=1"
-      - "traefik.http.services.backends.loadbalancer.server.port=8000"
-
-  # ── Dummy Backend 2 ───────────────────────────────────────────────────────
-  backend-2:
-    build:
-      context: ./test-backend
-      dockerfile: Dockerfile
-    container_name: backend-2
-    restart: unless-stopped
-    environment:
-      BACKEND_NAME: backend-2
-      BACKEND_PORT: ${BACKEND_PORT:-8000}
-    networks:
-      - gateway_net
-    expose:
-      - "8000"
-    healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-    labels:
-      - "traefik.enable=true"
-      # Must reference the SAME service name as backend-1 for load balancing
-      - "traefik.http.routers.backends.rule=PathPrefix(`/`)"
-      - "traefik.http.routers.backends.entrypoints=web"
-      - "traefik.http.routers.backends.priority=1"
-      - "traefik.http.services.backends.loadbalancer.server.port=8000"
+      # Catch-all router: everything NOT matched by /api goes here
+      - "traefik.http.routers.recruit-app.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.recruit-app.entrypoints=web"
+      - "traefik.http.routers.recruit-app.priority=1"
+      - "traefik.http.services.recruit-app.loadbalancer.server.port=8000"
 
 # ── Shared network ────────────────────────────────────────────────────────────
 networks:
