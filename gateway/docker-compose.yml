@@ -121,6 +121,16 @@ services:
       - "traefik.http.routers.recruit-app.priority=1"
       - "traefik.http.services.recruit-app.loadbalancer.server.port=8000"
 
+# ── Compiler 1 (external service) ───────────────────────────────────────────
+# Compiler 1 runs in its own compose stack (compiler-1/docker-compose.yml).
+# For integration, it must be reachable from the gateway network.
+#
+# LOCAL: Use COMPILER_URL=http://compiler-1:8000 (Docker service name)
+# DEMO:  Use COMPILER_URL=http://<compiler-host>:8001 (LAN address)
+#
+# To connect Compiler 1 to the gateway network for local testing:
+#   docker network connect gateway_gateway_net compiler-1
+
 # ── Shared network ────────────────────────────────────────────────────────────
 networks:
   gateway_net:
