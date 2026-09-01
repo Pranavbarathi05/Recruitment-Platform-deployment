@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from .routers import admin, session
+from .routers import admin, execute, session
 from .stale_checker import start_stale_checker
 
 _START_TIME = datetime.now(timezone.utc)
@@ -45,6 +45,7 @@ app = FastAPI(
 
 app.include_router(session.router)
 app.include_router(admin.router)
+app.include_router(execute.router)
 
 
 # ── Phase 1 endpoints (unchanged) ────────────────────────────────────────────

@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .languages import LanguageAdapter, get_adapter
+from .languages import LanguageAdapter, SqlAdapter, get_adapter
 from .schemas import (
     ExecuteRequest,
     ExecuteResponse,
@@ -195,6 +195,107 @@ def execute_single_test(
             p.unlink(missing_ok=True)
 
 
+def _execute_sql(
+    adapter: SqlAdapter,
+    source_path: Path,
+    work_dir: Path,
+    request: ExecuteRequest,
+    overall_start: float,
+) -> ExecuteResponse:
+    """Execute SQL source code against test cases using SQLite.
+
+    Flow:
+      1. Initialize database with source SQL (DDL + DML)
+      2. For each test case, run the query (test_case.input) and compare output
+    """
+    language = request.language.value
+
+    # Initialize the database with the source SQL
+    success, error = adapter.init_database(source_path, work_dir)
+    if not success:
+        return ExecuteResponse(
+            status=ExecutionStatus.compilation_error,
+            language=language,
+            execution_time_ms=int((time.monotonic() - overall_start) * 1000),
+            total_tests=len(request.test_cases),
+            error=error,
+        )
+
+    # Execute test cases (each test case's input is a SQL query)
+    results: list[TestCaseResult] = []
+    failed_test: Optional[int] = None
+    status = ExecutionStatus.accepted
+
+    for i, tc in enumerate(request.test_cases):
+        start = time.monotonic()
+        try:
+            query_ok, stdout, stderr = adapter.run_query(
+                tc.input, work_dir, request.limits.max_output_bytes,
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if not query_ok:
+                results.append(TestCaseResult(
+                    test_case=i + 1,
+                    label=tc.label,
+                    passed=False,
+                    execution_time_ms=elapsed_ms,
+                    input=tc.input if len(tc.input) < 2048 else tc.input[:2048] + "...",
+                    stdout=stdout,
+                    stderr=stderr,
+                ))
+                failed_test = i + 1
+                status = ExecutionStatus.runtime_error
+                break
+
+            actual = stdout.rstrip()
+            expected = tc.expected_output.rstrip()
+            passed = actual == expected
+
+            results.append(TestCaseResult(
+                test_case=i + 1,
+                label=tc.label,
+                passed=passed,
+                execution_time_ms=elapsed_ms,
+                input=tc.input if len(tc.input) < 2048 else tc.input[:2048] + "...",
+                stdout=stdout,
+                stderr=stderr,
+            ))
+
+            if not passed:
+                failed_test = i + 1
+                status = ExecutionStatus.wrong_answer
+                break
+
+        except Exception as e:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            results.append(TestCaseResult(
+                test_case=i + 1,
+                label=tc.label,
+                passed=False,
+                execution_time_ms=elapsed_ms,
+                input=tc.input if len(tc.input) < 2048 else tc.input[:2048] + "...",
+                stdout="",
+                stderr=f"INTERNAL ERROR: {type(e).__name__}: {e}",
+            ))
+            failed_test = i + 1
+            status = ExecutionStatus.internal_error
+            break
+
+    total_time_ms = int((time.monotonic() - overall_start) * 1000)
+    passed_count = sum(1 for r in results if r.passed)
+
+    return ExecuteResponse(
+        status=status,
+        language=language,
+        execution_time_ms=total_time_ms,
+        tests=results,
+        failed_test=failed_test,
+        total_tests=len(request.test_cases),
+        passed_tests=passed_count,
+    )
+
+
 def execute_code(request: ExecuteRequest, max_concurrent: int, active_count_fn) -> ExecuteResponse:
     """
     Execute source code against test cases in an isolated temporary directory.
@@ -232,6 +333,12 @@ def execute_code(request: ExecuteRequest, max_concurrent: int, active_count_fn) 
         # Write source code
         source_path = work_dir / f"solution{adapter.file_extension}"
         source_path.write_text(request.source_code, encoding="utf-8")
+
+        # SQL has a special execution model
+        if isinstance(adapter, SqlAdapter):
+            return _execute_sql(
+                adapter, source_path, work_dir, request, overall_start,
+            )
 
         # Compile if needed
         if hasattr(adapter, 'compile'):

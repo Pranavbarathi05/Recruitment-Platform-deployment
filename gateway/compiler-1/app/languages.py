@@ -183,18 +183,44 @@ class PythonAdapter(LanguageAdapter):
             return None
 
 
-# ── JavaScript ───────────────────────────────────────────────────────────────
+# ── SQL (SQLite) ────────────────────────────────────────────────────────────
 
-class JavaScriptAdapter(LanguageAdapter):
-    name = "javascript"
-    file_extension = ".js"
-    _interpreter = "node"
+class SqlAdapter(LanguageAdapter):
+    """SQL adapter using SQLite as the execution engine.
+
+    Source code contains SQL statements (DDL + DML) that set up the database.
+    Each test case's `input` is a SQL query to run against the database.
+    The query output is compared against `expected_output`.
+
+    The source code is executed first to create schema and insert data.
+    Then each test case runs its query and captures results.
+    """
+    name = "sql"
+    file_extension = ".sql"
+    _interpreter = "sqlite3"
 
     def compile(self, source_path: Path, work_dir: Path) -> tuple[bool, str]:
-        return True, ""  # Interpreted
+        # SQL doesn't need compilation, but we validate syntax by
+        # attempting to execute the source against an empty database.
+        db_path = work_dir / "test.db"
+        try:
+            result = subprocess.run(
+                [self._interpreter, str(db_path)],
+                input=source_path.read_text(encoding="utf-8"),
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                return False, result.stderr.strip()
+            return True, ""
+        except FileNotFoundError:
+            return False, "sqlite3 not found"
+        except subprocess.TimeoutExpired:
+            return False, "SQL validation timed out"
 
     def run_script(self, source_path: Path, work_dir: Path) -> str:
-        return f'exec node "{source_path}"\n'
+        # SQL adapter uses a custom execution model via executor.py,
+        # not a bash script. This is a placeholder.
+        return f'exec cat "{source_path}"\n'
 
     def is_available(self) -> bool:
         return shutil.which(self._interpreter) is not None
@@ -206,6 +232,61 @@ class JavaScriptAdapter(LanguageAdapter):
         except Exception:
             return None
 
+    def init_database(self, source_path: Path, work_dir: Path) -> tuple[bool, str]:
+        """Execute the source SQL to set up the database schema and data.
+
+        Returns (success, error_message).
+        """
+        db_path = work_dir / "test.db"
+        # Remove any existing database
+        db_path.unlink(missing_ok=True)
+        try:
+            result = subprocess.run(
+                [self._interpreter, str(db_path)],
+                input=source_path.read_text(encoding="utf-8"),
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                return False, result.stderr.strip()
+            return True, ""
+        except FileNotFoundError:
+            return False, "sqlite3 not found"
+        except subprocess.TimeoutExpired:
+            return False, "SQL setup timed out"
+
+    def run_query(self, query: str, work_dir: Path, max_output_bytes: int = 65536) -> tuple[bool, str, str]:
+        """Execute a SQL query and return (success, stdout, stderr).
+
+        Args:
+            query: SQL query to execute.
+            work_dir: Working directory containing test.db.
+            max_output_bytes: Max output size before truncation.
+
+        Returns:
+            (success, stdout, stderr)
+        """
+        db_path = work_dir / "test.db"
+        if not db_path.exists():
+            return False, "", "Database not initialized"
+
+        # Run query in CSV mode for predictable output
+        full_query = f".mode csv\n.headers on\n{query}"
+        try:
+            result = subprocess.run(
+                [self._interpreter, str(db_path)],
+                input=full_query,
+                capture_output=True, text=True, timeout=10,
+            )
+            stdout = result.stdout
+            stderr = result.stderr
+            if len(stdout.encode("utf-8")) > max_output_bytes:
+                stdout = stdout[:max_output_bytes] + f"\n... [truncated at {max_output_bytes} bytes]"
+            return result.returncode == 0, stdout.strip(), stderr.strip()
+        except subprocess.TimeoutExpired:
+            return False, "", "Query timed out"
+        except Exception as e:
+            return False, "", f"Internal error: {e}"
+
 
 # ── Registry ─────────────────────────────────────────────────────────────────
 
@@ -214,7 +295,7 @@ _REGISTRY: dict[str, LanguageAdapter] = {
     "c": CAdapter(),
     "java": JavaAdapter(),
     "python": PythonAdapter(),
-    "javascript": JavaScriptAdapter(),
+    "sql": SqlAdapter(),
 }
 
 

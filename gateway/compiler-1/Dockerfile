@@ -6,7 +6,7 @@
 #   C     (gcc)
 #   Java  (OpenJDK 21)
 #   Python (Python 3)
-#   JavaScript (Node.js)
+#   SQL   (SQLite3)
 #
 # Security:
 #   - Runs as non-root user.
@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     gcc \
     openjdk-21-jdk-headless \
-    nodejs \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed Python packages from builder

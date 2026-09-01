@@ -4,14 +4,14 @@
 # Runs the dsc-recruit backend independently from the Gateway.
 # Does NOT require the Gateway, Traefik, Compiler, or any other service.
 #
-# For LAN deployment, App 1 listens on 0.0.0.0:8001 so the Gateway
+# For LAN deployment, App 1 listens on 0.0.0.0:8002 so the Gateway
 # machine can reach it over the network.
 #
 # Usage:
 #   cp .env.example .env
 #   # Edit .env with real Supabase credentials
 #   docker compose up -d --build
-#   curl http://localhost:8001/
+#   curl http://localhost:8002/
 #   docker compose down
 # ══════════════════════════════════════════════════════════════════════════════
 

@@ -140,11 +140,12 @@ int main() {
 
 
 @pytest.mark.asyncio
-async def test_javascript_accepted(client: AsyncClient) -> None:
-    """JavaScript code that produces correct output."""
+async def test_c_accepted(client: AsyncClient) -> None:
+    """C code that produces correct output."""
+    code = '#include <stdio.h>\nint main() {\n    printf("hello\\n");\n    return 0;\n}'
     body = _exec_body(
-        language="javascript",
-        code='console.log("hello")',
+        language="c",
+        code=code,
         test_cases=[{"input": "", "expected_output": "hello"}],
     )
     resp = await client.post("/execute", json=body)
@@ -253,6 +254,68 @@ int main() {
 """
     body = _exec_body(
         language="cpp",
+        code=code,
+        test_cases=[{"input": "", "expected_output": ""}],
+    )
+    resp = await client.post("/execute", json=body)
+    data = resp.json()
+    assert data["status"] in ("wrong_answer", "runtime_error")
+
+
+@pytest.mark.asyncio
+async def test_c_runtime_error(client: AsyncClient) -> None:
+    """C code that crashes at runtime (segfault)."""
+    code = """
+#include <stdlib.h>
+int main() {
+    int* p = NULL;
+    *p = 42;
+    return 0;
+}
+"""
+    body = _exec_body(
+        language="c",
+        code=code,
+        test_cases=[{"input": "", "expected_output": ""}],
+    )
+    resp = await client.post("/execute", json=body)
+    data = resp.json()
+    assert data["status"] in ("wrong_answer", "runtime_error")
+
+
+@pytest.mark.asyncio
+async def test_java_accepted(client: AsyncClient) -> None:
+    """Java code that produces correct output."""
+    code = """
+public class Solution {
+    public static void main(String[] args) {
+        System.out.println("hello");
+    }
+}
+"""
+    body = _exec_body(
+        language="java",
+        code=code,
+        test_cases=[{"input": "", "expected_output": "hello"}],
+    )
+    resp = await client.post("/execute", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_java_runtime_error(client: AsyncClient) -> None:
+    """Java code that throws an exception at runtime."""
+    code = """
+public class Solution {
+    public static void main(String[] args) {
+        throw new RuntimeException("test error");
+    }
+}
+"""
+    body = _exec_body(
+        language="java",
         code=code,
         test_cases=[{"input": "", "expected_output": ""}],
     )
@@ -637,3 +700,87 @@ async def test_hostile_fork_bomb(client: AsyncClient) -> None:
     resp = await client.post("/execute", json=body)
     # Should be limited by ulimit -u
     assert resp.status_code in (200, 422)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SQL tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_sql_accepted(client: AsyncClient) -> None:
+    """SQL code that produces correct output."""
+    source = """
+CREATE TABLE users (id INTEGER, name TEXT);
+INSERT INTO users VALUES (1, 'Alice');
+INSERT INTO users VALUES (2, 'Bob');
+"""
+    body = _exec_body(
+        language="sql",
+        code=source,
+        test_cases=[
+            {"input": "SELECT name FROM users ORDER BY id;", "expected_output": "name\nAlice\nBob"},
+        ],
+    )
+    resp = await client.post("/execute", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "accepted"
+    assert data["passed_tests"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sql_wrong_answer(client: AsyncClient) -> None:
+    """SQL code that produces wrong output."""
+    source = """
+CREATE TABLE items (id INTEGER, val INTEGER);
+INSERT INTO items VALUES (1, 10);
+INSERT INTO items VALUES (2, 20);
+"""
+    body = _exec_body(
+        language="sql",
+        code=source,
+        test_cases=[
+            {"input": "SELECT SUM(val) AS total FROM items;", "expected_output": "total\n100"},
+        ],
+    )
+    resp = await client.post("/execute", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "wrong_answer"
+
+
+@pytest.mark.asyncio
+async def test_sql_syntax_error(client: AsyncClient) -> None:
+    """SQL syntax error is caught."""
+    body = _exec_body(
+        language="sql",
+        code="SELCT * FROM nonexistent;",
+        test_cases=[{"input": "SELECT 1;", "expected_output": "1"}],
+    )
+    resp = await client.post("/execute", json=body)
+    data = resp.json()
+    assert data["status"] == "compilation_error"
+
+
+@pytest.mark.asyncio
+async def test_sql_multiple_queries(client: AsyncClient) -> None:
+    """SQL with multiple test case queries."""
+    source = """
+CREATE TABLE emp (id INTEGER, name TEXT, dept TEXT, salary INTEGER);
+INSERT INTO emp VALUES (1, 'Alice', 'Eng', 90000);
+INSERT INTO emp VALUES (2, 'Bob', 'Mkt', 70000);
+INSERT INTO emp VALUES (3, 'Charlie', 'Eng', 95000);
+"""
+    body = _exec_body(
+        language="sql",
+        code=source,
+        test_cases=[
+            {"input": "SELECT COUNT(*) AS cnt FROM emp;", "expected_output": "cnt\n3"},
+            {"input": "SELECT name FROM emp WHERE dept = 'Eng' ORDER BY salary DESC;", "expected_output": "name\nCharlie\nAlice"},
+        ],
+    )
+    resp = await client.post("/execute", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "accepted"
+    assert data["passed_tests"] == 2

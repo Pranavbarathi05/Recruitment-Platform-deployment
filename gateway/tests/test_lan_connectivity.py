@@ -61,7 +61,7 @@ async def test_languages_endpoint() -> None:
         assert resp.status_code == 200
         data = resp.json()
         # All 5 languages should be available
-        for lang in ("python", "cpp", "c", "java", "javascript"):
+        for lang in ("python", "cpp", "c", "java", "sql"):
             assert lang in data
             assert data[lang]["available"] is True
 
@@ -145,19 +145,19 @@ async def test_execution_java_hello() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Execution connectivity — JavaScript
+# 6. Execution connectivity — SQL
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_execution_javascript_hello() -> None:
-    """Execute a simple JavaScript program over the network."""
+async def test_execution_sql_hello() -> None:
+    """Execute a simple SQL query over the network."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{COMPILER_URL}/execute",
             json={
-                "language": "javascript",
-                "source_code": 'console.log("hello")',
-                "test_cases": [{"input": "", "expected_output": "hello"}],
+                "language": "sql",
+                "source_code": "CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);",
+                "test_cases": [{"input": "SELECT * FROM t;", "expected_output": "id\n1"}],
             },
         )
         assert resp.status_code == 200

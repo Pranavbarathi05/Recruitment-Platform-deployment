@@ -10,7 +10,7 @@ App 1 System
 │  App 1 container                 │
 │  FastAPI backend                 │
 │  Port 8000 (internal)            │
-│  → Host port 8001                │
+│  → Host port 8002                │
 └──────────────────────────────────┘
 ```
 
@@ -20,7 +20,7 @@ App 1 runs independently. It does NOT require the Gateway, Traefik, Compiler, or
 
 - Docker Engine 20.10+
 - Docker Compose v2.20+
-- Free host port: **8001** (or configured via `APP1_HOST_PORT`)
+- Free host port: **8002** (or configured via `APP1_HOST_PORT`)
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ cp .env.example .env
 docker compose up -d --build
 
 # Verify health
-curl -s http://localhost:8001/
+curl -s http://localhost:8002/
 
 # Watch logs
 docker compose logs -f
@@ -52,14 +52,14 @@ docker compose down
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | — | Supabase service role key |
 | `SUPABASE_JWT_SECRET` | Yes | — | Supabase JWT secret |
 | `CORS_ORIGINS` | No | `http://localhost:80,http://localhost:5173` | Allowed CORS origins |
-| `APP1_HOST_PORT` | No | `8001` | Host-side port |
+| `APP1_HOST_PORT` | No | `8002` | Host-side port |
 
 ## Networking
 
 ### Container Port
 
 - **Internal:** 8000 (uvicorn inside container)
-- **Host:** 8001 (mapped via `ports:` in docker-compose.yml)
+- **Host:** 8002 (mapped via `ports:` in docker-compose.yml)
 
 ### LAN Access
 
@@ -71,7 +71,7 @@ hostname -I | awk '{print $1}'
 # Example output: 192.168.43.100
 
 # Gateway would reach App 1 at:
-# http://192.168.43.100:8001/
+# http://192.168.43.100:8002/
 ```
 
 ### Firewall
@@ -79,10 +79,10 @@ hostname -I | awk '{print $1}'
 If using `ufw`:
 
 ```bash
-sudo ufw allow 8001/tcp
+sudo ufw allow 8002/tcp
 ```
 
-Only port 8001 needs to be open. No other ports are required.
+Only port 8002 needs to be open. No other ports are required.
 
 ## Health Check
 
@@ -102,7 +102,7 @@ Docker healthcheck polls this every 15 seconds.
 - ✅ No privileged mode
 - ✅ No host networking
 - ✅ No secrets in Dockerfile or docker-compose.yml
-- ✅ Only port 8001 exposed
+- ✅ Only port 8002 exposed
 - ✅ Uses official Python slim base image
 - ✅ Multi-stage build minimizes image size
 - ✅ `restart: unless-stopped` for resilience
@@ -111,6 +111,7 @@ Docker healthcheck polls this every 15 seconds.
 
 - ⚠️ Supabase credentials passed as environment variables (visible in `docker inspect`)
 - ⚠️ No TLS (plain HTTP) — acceptable for isolated LAN demo
+- ⚠️ Supabase DNS resolution fails when using dummy credentials (expected)
 - ⚠️ No authentication on the health endpoint
 - ⚠️ Not production-hardened (no resource limits, no seccomp profiles)
 
@@ -142,24 +143,66 @@ docker compose up -d
 docker compose ps
 
 # 5. Health endpoint
-curl -s http://localhost:8001/
+curl -s http://localhost:8002/
 
 # 6. Application logs
 docker compose logs app-1
 
 # 7. Restart behavior
 docker compose restart app-1
-curl -s http://localhost:8001/
+curl -s http://localhost:8002/
 
 # 8. Stop
 docker compose down
 ```
 
+## LAN Deployment (Separate Machine)
+
+### On System 3 (App 1 Machine)
+
+```bash
+# 1. Clone the repository
+git clone <repo-url>
+cd "Platform deployment"
+
+# 2. Configure App 1
+cd gateway/app-1
+cp .env.example .env
+# Edit .env with real Supabase credentials
+
+# 3. Build and start
+docker compose up -d --build
+
+# 4. Verify health
+curl -s http://localhost:8002/
+# Expected: {"status":"Healthy","message":"API is working"}
+
+# 5. Find LAN IP for Gateway configuration
+ip route get 1 | awk '{print $7; exit}'
+# Example output: 192.168.43.100
+```
+
+### On System 1 (Gateway Machine)
+
+```bash
+# Configure Gateway to reach App 1
+cd gateway
+cp .env.example .env
+# Edit .env: set APP1_URL=http://<APP1_LAN_IP>:8002
+
+# Start Gateway
+docker compose up -d
+
+# Verify routing
+curl -s http://localhost/
+# Should return App 1's health response
+```
+
 ## LAN Deployment Checklist
 
-- [ ] Docker and Docker Compose installed
+- [ ] Docker and Docker Compose installed on both machines
 - [ ] `.env` file configured with real Supabase credentials
 - [ ] Container builds and starts successfully
 - [ ] Health endpoint returns 200
-- [ ] Port 8001 is accessible from App 1 host
-- [ ] Gateway machine can reach `<APP1_IP>:8001` over LAN
+- [ ] Port 8002 is accessible from App 1 host
+- [ ] Gateway machine can reach `<APP1_IP>:8002` over LAN

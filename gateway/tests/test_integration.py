@@ -339,16 +339,16 @@ async def test_empty_test_cases(client: CompilerClient) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 16. JavaScript accepted
+# 16. SQL accepted
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_javascript_accepted(client: CompilerClient) -> None:
-    """JavaScript code that produces correct output is accepted."""
+async def test_sql_accepted(client: CompilerClient) -> None:
+    """SQL code that produces correct output is accepted."""
     result = await client.execute(
-        language="javascript",
-        source_code='console.log("hello")',
-        test_cases=[{"input": "", "expected_output": "hello"}],
+        language="sql",
+        source_code="CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);",
+        test_cases=[{"input": "SELECT * FROM t;", "expected_output": "id\n1"}],
     )
     assert result.status == "accepted"
     assert result.is_success

@@ -1,7 +1,11 @@
 """
-Request and response schemas for the Compiler 1 execution service.
+Request and response schemas for the gateway execution proxy.
 
-All submitted code and test input is UNTRUSTED.
+This module defines the API contract for the /api/execute endpoint,
+which proxies code execution requests to Compiler 1.
+
+The gateway does NOT execute code itself — it forwards requests to
+the compiler service and returns structured results.
 """
 from __future__ import annotations
 
@@ -62,6 +66,10 @@ class ExecuteRequest(BaseModel):
     source_code: str = Field(..., min_length=1, max_length=100_000, description="Source code to execute.")
     test_cases: list[TestCase] = Field(..., min_length=1, max_length=50, description="Test cases to run.")
     limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
+    # Optional context for session/request tracking
+    session_id: Optional[str] = Field(default=None, description="Session ID for request tracking.")
+    attempt_id: Optional[str] = Field(default=None, description="Assessment attempt ID.")
+    question_id: Optional[str] = Field(default=None, description="Question ID being evaluated.")
 
 
 # ── Test result ──────────────────────────────────────────────────────────────
@@ -88,6 +96,7 @@ class ExecutionStatus(str, Enum):
     invalid_language = "invalid_language"
     internal_error = "internal_error"
     capacity_exceeded = "capacity_exceeded"
+    compiler_unavailable = "compiler_unavailable"
 
 
 class ExecuteResponse(BaseModel):
@@ -100,20 +109,7 @@ class ExecuteResponse(BaseModel):
     failed_test: Optional[int] = Field(default=None, description="1-based index of the first failing test case.")
     total_tests: int = Field(default=0, ge=0)
     passed_tests: int = Field(default=0, ge=0)
-
-
-# ── Health ───────────────────────────────────────────────────────────────────
-
-class LanguageInfo(BaseModel):
-    name: str
-    available: bool
-    version: Optional[str] = None
-
-
-class HealthResponse(BaseModel):
-    status: str
-    service: str
-    version: str
-    available_languages: list[LanguageInfo]
-    max_concurrent: int
-    current_executions: int
+    # Request context echoed back
+    session_id: Optional[str] = None
+    attempt_id: Optional[str] = None
+    question_id: Optional[str] = None

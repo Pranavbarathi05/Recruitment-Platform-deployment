@@ -41,14 +41,13 @@ LANGUAGE_MAP = {
     "c++": "cpp",
     "c": "c",
     "java": "java",
-    "javascript": "javascript",
-    "js": "javascript",
-    "node": "javascript",
-    "nodejs": "javascript",
+    "sql": "sql",
+    "sqlite": "sql",
+    "sqlite3": "sql",
 }
 
 # Supported languages for validation
-SUPPORTED_LANGUAGES = {"python", "cpp", "c", "java", "javascript"}
+SUPPORTED_LANGUAGES = {"python", "cpp", "c", "java", "sql"}
 
 
 class CompilerError(Exception):
