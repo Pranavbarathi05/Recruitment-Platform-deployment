@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Recruitment Platform – Local Development Stack (Phase 3)
+# Recruitment Platform – Local Development Stack
 #
 # Runs ALL services on a single machine for testing.
 # This is NOT the production topology — it's for local development.
@@ -7,15 +7,17 @@
 # Services:
 #   traefik       – reverse proxy (entry point)
 #   gateway-api   – session control plane + code execution proxy
+#   frontend      – React SPA
 #   app-1         – dsc-recruit backend
 #   compiler-1    – code execution service
 #
 # Usage:
 #   cp .env.example .env
-#   # Edit .env with Supabase credentials
+#   # Edit .env with Supabase credentials and VITE_SUPABASE_*
 #   docker compose -f docker-compose.local.yml up -d --build
-#   curl http://localhost/api/health
-#   curl httplocalhost:8001/health
+#   curl http://localhost/               # Frontend SPA
+#   curl http://localhost/api/health     # Gateway API
+#   curl http://localhost:8001/health    # Compiler 1
 #
 # Shutdown:
 #   docker compose -f docker-compose.local.yml down
@@ -39,13 +41,37 @@ services:
               loadBalancer:
                 servers:
                   - url: "http://app-1:8000"
+            frontend-spa:
+              loadBalancer:
+                servers:
+                  - url: "http://frontend:8080"
+            gateway-api-svc:
+              loadBalancer:
+                servers:
+                  - url: "http://gateway-api:8000"
+
           routers:
-            app1-local:
-              rule: "PathPrefix(\\`/\\`)"
+            gateway-api-local:
+              rule: "PathPrefix(\`/api\`)"
+              entryPoints:
+                - web
+              service: gateway-api-svc
+              priority: 10
+
+            app1-backend-local:
+              rule: "PathPrefix(\`/questions\`) || PathPrefix(\`/submission\`) || PathPrefix(\`/assessment/start\`) || PathPrefix(\`/assessment/current\`) || PathPrefix(\`/assessment/attempt\`)"
               entryPoints:
                 - web
               service: app1-backend
+              priority: 5
+
+            frontend-spa-local:
+              rule: "PathPrefix(\`/\`)"
+              entryPoints:
+                - web
+              service: frontend-spa
               priority: 1
+
         DYNEOF
         exec traefik --configFile=/etc/traefik/traefik.yml
     ports:
@@ -66,6 +92,28 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.localhost`)"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
+
+  # ── Frontend (React SPA) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: gateway/frontend/Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:-}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:-}
+        VITE_API_URL: "."
+    container_name: frontend-local
+    restart: unless-stopped
+    networks:
+      - gateway_net
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── Gateway API (FastAPI) ─────────────────────────────────────────────────
   gateway-api:
@@ -92,12 +140,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.gateway-api.rule=PathPrefix(`/api`)"
-      - "traefik.http.routers.gateway-api.entrypoints=web"
-      - "traefik.http.routers.gateway-api.priority=10"
-      - "traefik.http.services.gateway-api.loadbalancer.server.port=8000"
 
   # ── App 1 (dsc-recruit backend) ──────────────────────────────────────────
   app-1:

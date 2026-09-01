@@ -1,16 +1,19 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Recruitment Platform – Gateway (Phase 2: LAN Deployment)
+# Recruitment Platform – Gateway
 # ══════════════════════════════════════════════════════════════════════════════
 # Services:
-#   traefik       – reverse proxy / load balancer (entry point)
-#   gateway-api   – session control plane, health, admin (/api/*)
+#   traefik       – reverse proxy (entry point)
+#   gateway-api   – session control, health, execute (/api/*)
+#   frontend      – React SPA (/, /login, /domains, /dashboard, etc.)
 #
-# Routing:
-#   GET /api/*        → gateway-api  (priority 10, control plane)
-#   GET /*            → App 1 via LAN (priority 1, external service)
+# Routing (file provider, priorities decide winner on overlap):
+#   /api/*                          → gateway-api  (priority 10)
+#   /questions/*, /submission/*     → App 1 backend (priority 5, external)
+#   /assessment/start|current|...   → App 1 backend (priority 5)
+#   /* (everything else)            → frontend SPA (priority 1, catch-all)
 #
-# App 1 is on a SEPARATE PHYSICAL MACHINE (System 2).
-# Its address is configured via APP1_URL in .env.
+# NOTE: /admin routes go to frontend SPA catch-all. Admin panel access
+# is not routed through the gateway — admins use App 1 directly.
 # ══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -31,13 +34,37 @@ services:
               loadBalancer:
                 servers:
                   - url: "$APP1_URL"
+            frontend-spa:
+              loadBalancer:
+                servers:
+                  - url: "http://frontend:8080"
+            gateway-api-svc:
+              loadBalancer:
+                servers:
+                  - url: "http://gateway-api:8000"
+
           routers:
-            app1-external:
-              rule: "PathPrefix(\`/\`)"
+            gateway-api-file:
+              rule: "PathPrefix(\`/api\`)"
+              entryPoints:
+                - web
+              service: gateway-api-svc
+              priority: 10
+
+            app1-backend-routes:
+              rule: "PathPrefix(\`/questions\`) || PathPrefix(\`/submission\`) || PathPrefix(\`/assessment/start\`) || PathPrefix(\`/assessment/current\`) || PathPrefix(\`/assessment/attempt\`)"
               entryPoints:
                 - web
               service: app1-backend
+              priority: 5
+
+            frontend-spa:
+              rule: "PathPrefix(\`/\`)"
+              entryPoints:
+                - web
+              service: frontend-spa
               priority: 1
+
         DYNEOF
         exec traefik --configFile=/etc/traefik/traefik.yml
     environment:
@@ -62,6 +89,28 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.localhost`)"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
+
+  # ── Frontend (React SPA) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: gateway/frontend/Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:-}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:-}
+        VITE_API_URL: "."
+    container_name: frontend
+    restart: unless-stopped
+    networks:
+      - gateway_net
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── Gateway API (FastAPI) ─────────────────────────────────────────────────
   gateway-api:
@@ -88,17 +137,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.gateway-api.rule=PathPrefix(`/api`)"
-      - "traefik.http.routers.gateway-api.entrypoints=web"
-      - "traefik.http.routers.gateway-api.priority=10"
-      - "traefik.http.services.gateway-api.loadbalancer.server.port=8000"
 
 # ── App 1 (External Service) ────────────────────────────────────────────────
-# App 1 runs on System 2 (separate physical machine).
+# App 1 runs on System 3 (separate physical machine).
 # Its address is configured via APP1_URL in .env.
-#
 # For LAN deployment:  APP1_URL=http://<APP1_LAN_IP>:8002
 # For local testing:   APP1_URL=http://host.docker.internal:8002
 
