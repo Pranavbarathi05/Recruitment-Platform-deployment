@@ -124,8 +124,10 @@ services:
       APP_VERSION: ${APP_VERSION:-0.3.0}
       SESSION_TIMEOUT_SECONDS: ${SESSION_TIMEOUT_SECONDS:-300}
       STALE_CHECK_INTERVAL_SECONDS: ${STALE_CHECK_INTERVAL_SECONDS:-60}
-      COMPILER_URL: ${COMPILER_URL:-http://compiler-1:8000}
+      COMPILER_URL: ${COMPILER_URL:-http://host.docker.internal:8001} #http://compiler-1:8000
       COMPILER_TIMEOUT: ${COMPILER_TIMEOUT:-60.0}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - gateway_net
     expose:
