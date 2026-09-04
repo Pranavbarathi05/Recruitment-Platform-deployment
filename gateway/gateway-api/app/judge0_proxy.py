@@ -68,6 +68,11 @@ JUDGE0_TIMEOUT = float(os.getenv("JUDGE0_TIMEOUT", "60.0"))
 JUDGE0_AUTH_HEADER = os.getenv("JUDGE0_AUTH_HEADER", "X-Judge0-Token")
 JUDGE0_AUTH_TOKEN = os.getenv("JUDGE0_AUTH_TOKEN", "")
 JUDGE0_MAX_POLL_SECONDS = float(os.getenv("JUDGE0_MAX_POLL_SECONDS", "120.0"))
+# How much additional time (beyond the submission's own run budget) the poller
+# tolerates for queue wait. Without this, a submission that is queued behind
+# other candidates for >~10s gets abandoned as internal_error even though it
+# would finish -- its run budget was consumed by queueing, not execution.
+JUDGE0_QUEUE_ALLOWANCE_SECONDS = float(os.getenv("JUDGE0_QUEUE_ALLOWANCE_SECONDS", "90.0"))
 JUDGE0_POLL_INTERVAL = float(os.getenv("JUDGE0_POLL_INTERVAL", "0.1"))
 JUDGE0_LANGUAGE_CACHE_TTL = float(os.getenv("JUDGE0_LANGUAGE_CACHE_TTL", "300.0"))
 
@@ -436,7 +441,10 @@ def execute_on_judge0(request: ExecuteRequest) -> ExecuteResponse:
             payload = _build_submission_payload(request, judge0_id, tc.input)
         try:
             token = _submit_submission(payload)
-            max_wait = min(payload["wall_time_limit"] + 10.0, JUDGE0_MAX_POLL_SECONDS)
+            max_wait = min(
+                payload["wall_time_limit"] + 10.0 + JUDGE0_QUEUE_ALLOWANCE_SECONDS,
+                JUDGE0_MAX_POLL_SECONDS,
+            )
             submission = _poll_submission(token, max_wait)
         except ExecutionServiceUnavailable as e:
             logger.error("Judge0 unavailable while executing: %s", e)
