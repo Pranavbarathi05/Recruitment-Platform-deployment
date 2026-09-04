@@ -40,6 +40,16 @@ RUN rm -rf /usr/share/nginx/html/*
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
 
+# ── Fix same-origin API base ──────────────────────────────────────────────────
+# The app is built with VITE_API_URL=".", so every fetch is route-relative
+# (e.g. `${apiUrl}/auth/me` == "./auth/me"). On deep SPA routes such as
+# /assessment/<id> that resolves to /assessment/auth/me instead of /auth/me,
+# which falls through to the SPA catch-all and returns index.html instead of
+# JSON. Pinning <base href="/"> makes all document-relative fetches resolve
+# against the origin root regardless of the current route depth, so they reach
+# Traefik/app-1 with the canonical path. Deployment-side only — no app change.
+RUN sed -i 's|<head>|<head><base href="/" />|' /usr/share/nginx/html/index.html
+
 # Copy custom nginx config
 COPY gateway/frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
