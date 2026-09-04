@@ -27,6 +27,7 @@ services:
       # ── Supabase (REQUIRED – app will not start without these) ──
       SUPABASE_URL: ${SUPABASE_URL:-https://your-project.supabase.co}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-your-service-role-key}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-your-anon-key-here}
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-your-jwt-secret}
       # ── CORS ──
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:80,http://localhost:5173}

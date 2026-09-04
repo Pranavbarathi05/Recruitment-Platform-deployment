@@ -129,8 +129,15 @@ services:
       STALE_CHECK_INTERVAL_SECONDS: ${STALE_CHECK_INTERVAL_SECONDS:-60}
       COMPILER_URL: http://compiler-1:8000
       COMPILER_TIMEOUT: ${COMPILER_TIMEOUT:-60.0}
+      # ── System 3 (Judge0) ──
+      EXECUTION_BACKEND: ${EXECUTION_BACKEND:-judge0}
+      JUDGE0_URL: ${JUDGE0_URL:-http://judge0-server:2358}
+      JUDGE0_TIMEOUT: ${JUDGE0_TIMEOUT:-60.0}
+      JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
+      JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
     networks:
       - gateway_net
+      - system3
     expose:
       - "8000"
     healthcheck:
@@ -151,6 +158,7 @@ services:
     environment:
       SUPABASE_URL: ${SUPABASE_URL:-https://your-project.supabase.co}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-your-service-role-key}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-your-anon-key-here}
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-your-jwt-secret}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:80,http://localhost:5173}
       HOST: "0.0.0.0"
@@ -189,7 +197,10 @@ services:
       retries: 3
       start_period: 10s
 
-# ── Shared network ────────────────────────────────────────────────────────────
+# ── Shared networks ───────────────────────────────────────────────────────────
 networks:
   gateway_net:
     driver: bridge
+  # External network shared with the Judge0 System 3 stack (docker network create system3)
+  system3:
+    external: true

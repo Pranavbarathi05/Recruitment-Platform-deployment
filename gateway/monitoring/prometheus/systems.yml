@@ -1,0 +1,17 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Additional LAN scrape targets for the REAL multi-machine deployment.
+#
+# Currently empty: in the local simulation every role runs on one host, so
+# node-exporter and cAdvisor above already cover it. Do NOT put machine-specific
+# LAN addresses here unless they are the actual addresses of System 2 / System 3
+# machines.
+#
+# Shape (Prometheus file_sd):
+#   - targets: ["10.0.0.11:9100", "10.0.0.11:8080"]
+#     labels: { system: "1", role: "app" }
+#   - targets: ["10.0.0.12:9100"]
+#     labels: { system: "2", role: "backend" }
+#   - targets: ["10.0.0.13:9100", "10.0.0.13:8080"]
+#     labels: { system: "3", role: "judge0" }
+# ──────────────────────────────────────────────────────────────────────────────
+[]

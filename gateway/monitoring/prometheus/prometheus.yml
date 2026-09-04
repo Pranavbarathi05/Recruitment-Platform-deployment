@@ -1,0 +1,42 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Host CPU / RAM / disk (this monitoring host, currently the same physical
+  # machine that runs the local System 1 + System 3 simulation).
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # Per-container metrics for every container on this Docker host:
+  #   System 1: traefik / frontend / gateway-api
+  #   System 2 (local sim): app-1 / compiler-1
+  #   System 3: judge0-server / judge0-worker / judge0-db / judge0-redis
+  #   plus the monitoring stack itself.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  # Future real multi-machine LAN: each physical system runs its own
+  # node-exporter (+ cAdvisor if it is a Docker host). Add their addresses to
+  # systems.yml (file-based service discovery, re-read on the fly):
+  #
+  #   - targets: ["<SYSTEM1_LAN_IP>:9100", "<SYSTEM1_LAN_IP>:8080"]
+  #     labels: { system: "1", role: "app" }
+  #   - targets: ["<SYSTEM2_LAN_IP>:9100"]
+  #     labels: { system: "2", role: "backend" }
+  #   - targets: ["<SYSTEM3_LAN_IP>:9100", "<SYSTEM3_LAN_IP>:8080"]
+  #     labels: { system: "3", role: "judge0" }
+  #
+  # No stale addresses are committed; see monitoring/.env.example for the
+  # SYSTEM{1,2,3}_EXPORTER variables that document the intended addresses.
+  - job_name: systems
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/systems.yml
+        refresh_interval: 60s

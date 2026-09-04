@@ -8,12 +8,13 @@
 #
 # Routing (file provider, priorities decide winner on overlap):
 #   /api/*                          → gateway-api  (priority 10)
-#   /questions/*, /submission/*     → App 1 backend (priority 5, external)
+#   /auth/*                         → App 1 backend (priority 5)
+#   /questions/*                    → App 1 backend (priority 5)
+#   /submission/*                   → App 1 backend (priority 5)
 #   /assessment/start|current|...   → App 1 backend (priority 5)
+#   /coding/*                       → App 1 backend (priority 5)
+#   /admin/*                        → App 1 backend (priority 5)
 #   /* (everything else)            → frontend SPA (priority 1, catch-all)
-#
-# NOTE: /admin routes go to frontend SPA catch-all. Admin panel access
-# is not routed through the gateway — admins use App 1 directly.
 # ══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -52,7 +53,7 @@ services:
               priority: 10
 
             app1-backend-routes:
-              rule: "PathPrefix(\`/questions\`) || PathPrefix(\`/submission\`) || PathPrefix(\`/assessment/start\`) || PathPrefix(\`/assessment/current\`) || PathPrefix(\`/assessment/attempt\`)"
+              rule: "PathPrefix(\`/auth\`) || PathPrefix(\`/questions\`) || PathPrefix(\`/submission\`) || PathPrefix(\`/assessment/start\`) || PathPrefix(\`/assessment/current\`) || PathPrefix(\`/assessment/attempt\`) || PathPrefix(\`/coding\`) || PathPrefix(\`/admin\`)"
               entryPoints:
                 - web
               service: app1-backend
@@ -126,10 +127,17 @@ services:
       STALE_CHECK_INTERVAL_SECONDS: ${STALE_CHECK_INTERVAL_SECONDS:-60}
       COMPILER_URL: ${COMPILER_URL:-http://host.docker.internal:8001} #http://compiler-1:8000
       COMPILER_TIMEOUT: ${COMPILER_TIMEOUT:-60.0}
+      # ── System 3 (Judge0) ──
+      EXECUTION_BACKEND: ${EXECUTION_BACKEND:-judge0}
+      JUDGE0_URL: ${JUDGE0_URL:-http://judge0-server:2358}
+      JUDGE0_TIMEOUT: ${JUDGE0_TIMEOUT:-60.0}
+      JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
+      JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - gateway_net
+      - system3
     expose:
       - "8000"
     healthcheck:
@@ -146,7 +154,11 @@ services:
 # For LAN deployment:  APP1_URL=http://<APP1_LAN_IP>:8002
 # For local testing:   APP1_URL=http://host.docker.internal:8002
 
-# ── Shared network ────────────────────────────────────────────────────────────
+# ── Shared networks ───────────────────────────────────────────────────────────
 networks:
   gateway_net:
     driver: bridge
+  # External network shared with the Judge0 System 3 stack.
+  # Create it once:  docker network create system3
+  system3:
+    external: true

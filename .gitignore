@@ -3,3 +3,6 @@
 .mcp.json
 .freebuff
 dsc-recruit/
+
+# Judge0 System 3 secrets
+gateway/judge0/judge0.conf

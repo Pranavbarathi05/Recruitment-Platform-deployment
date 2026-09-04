@@ -93,6 +93,8 @@ class ExecutionStatus(str, Enum):
     time_limit_exceeded = "time_limit_exceeded"
     runtime_error = "runtime_error"
     compilation_error = "compilation_error"
+    memory_limit_exceeded = "memory_limit_exceeded"
+    output_limit_exceeded = "output_limit_exceeded"
     invalid_language = "invalid_language"
     internal_error = "internal_error"
     capacity_exceeded = "capacity_exceeded"

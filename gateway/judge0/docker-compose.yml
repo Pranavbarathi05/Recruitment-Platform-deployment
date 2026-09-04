@@ -1,0 +1,129 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Judge0 – System 3 (independent code execution service)
+#
+# Self-hosted Judge0 CE (v1.13.1) using the official deployment architecture:
+#   judge0-server (Rails API) -> Redis queue -> judge0-worker (isolate sandboxes)
+#   PostgreSQL 16 (submission metadata), Redis 7.2 (queue)
+#
+# Independence:
+#   - Own Compose project, own network (external `system3`), own data volume.
+#   - Only the Judge0 HTTP API (port 2358) is exposed, bound to 127.0.0.1 for
+#     host-side testing. PostgreSQL and Redis expose NO host ports.
+#   - API is protected with an authentication token (see judge0.conf).
+#
+# Reachability:
+#   The gateway-api container joins the external `system3` network and talks to
+#   Judge0 at http://judge0-server:2358 — no host port needed for that path.
+#
+# Create the shared network once:
+#   docker network create system3
+# Then:
+#   docker compose up -d
+# ══════════════════════════════════════════════════════════════════════════════
+
+x-logging:
+  &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100M
+
+services:
+
+  # ── Judge0 API server ──────────────────────────────────────────────────────
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    container_name: judge0-server
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    ports:
+      # Host-local only: developer curl against the API (e.g. /languages).
+      # The gateway does NOT use this mapping — it uses the system3 network.
+      - "127.0.0.1:${JUDGE0_PORT:-2358}:2358"
+    depends_on:
+      - judge0-db
+      - judge0-redis
+    networks:
+      - system3
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:2358/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    <<: *default-logging
+
+  # ── Judge0 worker (creates isolate sandboxes via Docker socket) ───────────
+  # Stock image on purpose: the isolate cgroup-v1 incompatibility on cgroup v2
+  # hosts is solved at the CONFIG layer (ENABLE_PER_PROCESS_*_LIMIT=true in
+  # judge0.conf makes Judge0 enforce limits via rlimits, no "--cg"), so no
+  # custom isolate build is needed.
+  judge0-worker:
+    image: judge0/judge0:1.13.1
+    container_name: judge0-worker
+    restart: unless-stopped
+    command: ["./scripts/workers"]
+    privileged: true
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - judge0-server
+    networks:
+      - system3
+    healthcheck:
+      test: ["CMD-SHELL", "ps -ef | grep -q '[r]esque'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    <<: *default-logging
+
+  # ── PostgreSQL (submission metadata) ──────────────────────────────────────
+  judge0-db:
+    image: postgres:16.2
+    container_name: judge0-db
+    restart: unless-stopped
+    env_file: judge0.conf
+    volumes:
+      - judge0-db-data:/var/lib/postgresql/data/
+    networks:
+      - system3
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U judge0 -d judge0"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    <<: *default-logging
+
+  # ── Redis (execution queue) ──────────────────────────────────────────────
+  judge0-redis:
+    image: redis:7.2.4
+    container_name: judge0-redis
+    restart: unless-stopped
+    command:
+      - "bash"
+      - "-c"
+      - 'docker-entrypoint.sh --appendonly no --requirepass "$$REDIS_PASSWORD"'
+    env_file: judge0.conf
+    networks:
+      - system3
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    <<: *default-logging
+
+volumes:
+  judge0-db-data:
+
+networks:
+  # Pre-created external network shared with the gateway stack:
+  #   docker network create system3
+  system3:
+    external: true

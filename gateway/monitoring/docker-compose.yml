@@ -1,0 +1,119 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Infrastructure Monitoring (LAN/admin only)
+#
+# Minimal self-hosted stack for the recruitment platform LAN:
+#   node-exporter  – host CPU / RAM / disk (/proc, /sys)
+#   cAdvisor       – per-container CPU / RAM / network for EVERY Docker
+#                    container on the host (System 1 + App 1 + System 3/Judge0)
+#   Prometheus     – scrapes the two exporters
+#   Grafana        – dashboards (auto-provisioned datasource + dashboard)
+#
+# Exposure:
+#   - Grafana is the only host port, LAN-bound:  http://<HOST_LAN_IP>:3001
+#   - Prometheus is additionally reachable on 127.0.0.1:9090 (admin queries).
+#   - Nothing here is routed through Traefik; no public internet ingress.
+#
+# Start / stop (from this directory):
+#   docker compose up -d
+#   docker compose ps
+#   docker compose down          # stops; keeps metrics data
+#   docker compose down -v       # stops AND wipes Prometheus/Grafana data
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: monitoring-node-exporter
+    restart: unless-stopped
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host/etc)($$|/)"
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+      - /proc:/host/proc:ro,rslave
+      - /sys:/host/sys:ro,rslave
+    networks:
+      - monitoring_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9100/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: monitoring-cadvisor
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - monitoring_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: monitoring-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/systems.yml:/etc/prometheus/systems.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - node-exporter
+      - cadvisor
+    networks:
+      - monitoring_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: monitoring-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:${MONITOR_PORT:-3001}/"
+    ports:
+      - "${MONITOR_PORT:-3001}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  monitoring_net:
+    driver: bridge

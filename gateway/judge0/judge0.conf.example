@@ -1,0 +1,78 @@
+################################################################################
+# Judge0 – System 3 configuration template
+################################################################################
+# Copy to judge0.conf and generate strong secrets, e.g.:
+#   openssl rand -hex 24   (Redis, PostgreSQL)
+#   openssl rand -hex 32   (AUTHN_TOKEN, SECRET_KEY_BASE)
+# judge0.conf is git-ignored because it contains secrets.
+################################################################################
+
+# ── Telemetry / maintenance ─────────────────────────────────────────────────
+JUDGE0_TELEMETRY_ENABLE=false
+MAINTENANCE_MODE=false
+
+# ── API authentication ──────────────────────────────────────────────────────
+# Every API request must carry:  X-Judge0-Token: <AUTHN_TOKEN>
+# Set the SAME value as JUDGE0_AUTH_TOKEN in gateway/.env.
+AUTHN_HEADER=X-Judge0-Token
+AUTHN_TOKEN=change-me-32-hex-bytes
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+REDIS_HOST=judge0-redis
+REDIS_PORT=
+REDIS_PASSWORD=change-me-strong-password
+RESQUE_NAMESPACE=judge0:
+
+# ── PostgreSQL ──────────────────────────────────────────────────────────────
+POSTGRES_HOST=judge0-db
+POSTGRES_PORT=
+POSTGRES_DB=judge0
+POSTGRES_USER=judge0
+POSTGRES_PASSWORD=change-me-strong-password
+
+# ── Workers / queue ─────────────────────────────────────────────────────────
+COUNT=4
+MAX_QUEUE_SIZE=100
+INTERVAL=0.1
+
+# ── Submission resource limits (defaults and ceilings) ─────────────────────
+CPU_TIME_LIMIT=5
+MAX_CPU_TIME_LIMIT=60
+CPU_EXTRA_TIME=1
+MAX_CPU_EXTRA_TIME=5
+WALL_TIME_LIMIT=20
+MAX_WALL_TIME_LIMIT=90
+MEMORY_LIMIT=262144
+MAX_MEMORY_LIMIT=2097152
+STACK_LIMIT=65536
+MAX_STACK_LIMIT=131072
+MAX_PROCESSES_AND_OR_THREADS=60
+MAX_MAX_PROCESSES_AND_OR_THREADS=120
+MAX_FILE_SIZE=1024
+MAX_MAX_FILE_SIZE=4096
+NUMBER_OF_RUNS=1
+MAX_NUMBER_OF_RUNS=1
+REDIRECT_STDERR_TO_STDOUT=false
+MAX_EXTRACT_SIZE=10240
+
+# ── Network (candidates must never enable network) ──────────────────────────
+ALLOW_ENABLE_NETWORK=false
+ENABLE_NETWORK=false
+
+# ── Rails ───────────────────────────────────────────────────────────────────
+RAILS_ENV=production
+SECRET_KEY_BASE=change-me-32-hex-bytes
+# -- cgroup v2 host compatibility (System 3) -------------------------------
+# Required on cgroup v2-only hosts: Judge0 CE 1.13.1 bundles an isolate fork
+# that supports only the cgroup v1 layout, so --cg executions fail on v2 hosts.
+# Enabling both per-process limits makes Judge0 enforce limits via rlimits
+# (no cgroups), which the stock worker image handles correctly on cgroup v2.
+ENABLE_PER_PROCESS_AND_THREAD_TIME_LIMIT=true
+ENABLE_PER_PROCESS_AND_THREAD_MEMORY_LIMIT=true
+
+# Java note: the OpenJDK 13 runtime reserves ~1 GiB of VIRTUAL address space
+# for the compressed class space even with a small -Xmx heap. MAX_MEMORY_LIMIT
+# (used as the compile-time RLIMIT_AS and the per-submission memory ceiling)
+# must therefore be >= 2 GiB or every Java submission dies at JVM startup.
+# Real memory stays bounded by the language-row -Xmx256m flag, so this raises
+# the address-space CEILING, not the enforced heap limit.

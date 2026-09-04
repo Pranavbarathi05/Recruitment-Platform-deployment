@@ -1,0 +1,13 @@
+# Grafana dashboard provisioning — every *.json in the directory is imported
+# automatically at startup (and on changes, when folder rescan is supported).
+apiVersion: 1
+
+providers:
+  - name: "platform"
+    orgId: 1
+    folder: "Infrastructure"
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
