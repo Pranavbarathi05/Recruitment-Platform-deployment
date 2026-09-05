@@ -13,10 +13,15 @@ __pycache__/
 venv/
 .venv/
 
-# Environment files
-.env
-.env.local
-.env.production
+# Environment files (secrets) — never copy these into a build context
+**/.env
+**/.env.local
+**/.env.production
+
+# Deployment-side secrets and stacks that are not needed in App 1 image
+gateway/judge0/
+gateway/monitoring/
+load-tests/
 
 # IDE
 .vscode/
@@ -28,7 +33,6 @@ gateway/compiler-1/
 gateway/compiler_client/
 gateway/traefik/
 gateway/test-backend/
-gateway/recruit-app/
 gateway/app-1/
 gateway/tests/
 gateway/.venv-integration/

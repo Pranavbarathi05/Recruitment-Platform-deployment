@@ -1,231 +1,194 @@
-# Recruitment Platform — LAN Deployment Guide
+# LAN Deployment Guide — multi-machine setup
 
-## Architecture Overview
+This guide is for the real deployment: separate machines on the college network.
+Single-laptop demo: see the root `README.md` (section 6). Technical reference for the
+Gateway stack: `README.md` in this folder.
 
-### Phase 3 Topology (Current)
+## What runs where
 
 ```
-Client
-  │
-  ▼  :80
-SYSTEM 1 (Gateway Machine)
-┌──────────────────────────────────────────┐
-│  Traefik              :80 (HTTP)         │
-│  Traefik Dashboard    :8080 (dev)        │
-│  Gateway API          :8000 (internal)   │
-│    └── /api/execute → Compiler 1         │
-│  App 1 (dsc-recruit)  :8000 (internal)   │
-└───────────────┬──────────────────────────┘
-                │
-                │  LAN TCP
-                │  COMPILER_URL
-                ▼
-SYSTEM 2 (Compiler Machine)
-┌──────────────────────────────────────────┐
-│  Compiler 1           :8001 (HTTP)       │
-│  Python / C / C++ / Java / SQL / JS      │
-│  Sandboxed execution with resource limits│
-└──────────────────────────────────────────┘
+Candidate computers (browser only)
+        │  http://<GATEWAY_LAN_IP>/
+        ▼
+GATEWAY machine                APP-01 machine              EXECUTION machine (Judge0)
+  traefik      :80    ───────▶  app-1  :8002 (internal)  ⇄  Supabase (Internet)
+  frontend            │  LAN   ▲                            ▲
+  gateway-api         │        │ APP1_URL                   │ JUDGE0_URL + shared
+  (sessions, /api/*)  └────────┘                            ▼ token (system3 network)
+                        code execution ──────────▶  judge0-server :2358 (+ worker/db/redis)
 ```
 
-### Request Flows
+| Machine | Runs | Repo folder | Start command |
+|---|---|---|---|
+| Gateway | traefik + frontend + gateway-api | `gateway/` | `docker compose up -d --build` |
+| App-01 | the application backend (dsc-recruit) | `gateway/app-1/` | `docker compose up -d --build` |
+| Execution | Judge0 (code execution) | `gateway/judge0/` | `docker compose up -d` |
 
-**Code Execution Flow:**
-```
-Client → POST /api/execute → Gateway API → Compiler 1 → Result → Client
-```
+Not yet implemented: **App-02** and **Compiler-02/03**. Only the machines above exist in
+this repository.
 
-**Application Flow:**
-```
-Client → GET /* → Traefik → App 1 → Response → Client
-```
+## Prerequisites (every machine)
 
-**Session Flow:**
-```
-Client → POST /api/session/* → Gateway API → Response → Client
-```
+- Docker Engine 20.10+ and the Compose plugin (v2.20+): `docker --version && docker compose version`
+- Ports: Gateway frees **80** (and 8080 if you want the dashboard); App-01 frees **8002**;
+  execution machine: nothing extra (Judge0's port stays local to that machine).
+- The application repository cloned **inside** the deployment repository as `dsc-recruit/`
+  on the machines that build images (Gateway and App-01). See the root `README.md`.
+- Every machine, once: `docker network create system3`
 
----
+> Judge0 must currently run **on the same machine as the Gateway stack** — the shared
+> `system3` Docker network does not span machines, and Judge0's API is bound to its own
+> machine's localhost. See ARCHITECTURE.md §11 for the manual changes needed to separate
+> them. App-01 can be anywhere on the LAN.
 
-## System 1 — Gateway / Application Host
+## Machine 1 — Gateway
 
-### Required Software
-
-- Docker Engine 20.10+
-- Docker Compose v2.20+
-- Free host ports: **80** (HTTP), **8080** (Traefik dashboard, optional)
-
-### Environment Variables
-
-Create `gateway/.env` from the template:
+### Environment
 
 ```bash
 cd gateway
 cp .env.example .env
 ```
 
-Edit `.env` and set:
+Edit `.env`:
 
 ```bash
-# App 1 address (for LAN deployment)
-APP1_URL=http://<APP1_LAN_IP>:8002
-
-# Compiler 1 address (REQUIRED for code execution)
-COMPILER_URL=http://<COMPILER_1_LAN_IP>:8001
-
-# Supabase credentials (REQUIRED for App 1)
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-SUPABASE_JWT_SECRET=your-jwt-secret
+APP1_URL=http://<APP1_LAN_IP>:8002      # App-01's LAN IP, port 8002
+JUDGE0_AUTH_TOKEN=<same as AUTHN_TOKEN in judge0/judge0.conf>
+# TRAEFIK_HTTP_PORT=80                  # change only if port 80 is taken
 ```
 
-### Commands
+### Start and verify
 
 ```bash
 cd gateway
-
-# Build and start all services
+docker network create system3                 # once
 docker compose up -d --build
+docker compose ps                             # wait for healthy
+curl -s http://localhost/api/health           # {"status":"ok",...}
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost/    # 200
+```
 
-# Verify all containers are healthy
-docker compose ps
+Find the LAN IP candidates will use:
 
-# Verify Gateway API health
+```bash
+hostname -I | awk '{print $1}'        # e.g. 192.168.1.10
+```
+
+## Machine 2 — App-01
+
+### Environment
+
+```bash
+cd gateway/app-1
+cp .env.example .env
+```
+
+Edit `.env` with the real Supabase credentials:
+
+```bash
+SUPABASE_URL=https://<your-project>.supabase.co
+SUPABASE_ANON_KEY=<your-anon-key>
+SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
+SUPABASE_JWT_SECRET=<your-jwt-secret>
+# CORS_ORIGINS default is fine: through the Gateway every browser call is
+# same-origin, so CORS is not involved in the LAN deployment.
+```
+
+### Start and verify
+
+```bash
+cd gateway/app-1
+docker compose up -d --build
+curl -s http://localhost:8002/     # {"status":"Healthy","message":"API is working"}
+hostname -I | awk '{print $1}'     # its LAN IP → goes into gateway/.env as APP1_URL
+```
+
+The Gateway reaches App-01 only on **port 8002** (map: host 8002 → container 8000).
+
+## Machine 3 — Execution (Judge0)
+
+Judge0 runs candidate code in isolated sandboxes. Its details, memory/cgroup notes and
+Java tuning live in `judge0/README.md` — read it before changing `judge0.conf`.
+
+### Environment
+
+```bash
+cd gateway/judge0
+cp judge0.conf.example judge0.conf
+# replace every change-me value with long random strings, e.g. `openssl rand -hex 24`
+# AUTHN_TOKEN here MUST equal JUDGE0_AUTH_TOKEN in gateway/.env
+```
+
+### Start and verify
+
+```bash
+cd gateway/judge0
+docker network create system3        # once (same network as gateway-api)
+docker compose up -d
+docker compose ps                    # all four judge0-* containers healthy
+```
+
+Verify from the Gateway (default backend is Judge0):
+
+```bash
+curl -s http://localhost/api/execute/health
+curl -s http://localhost/api/execute/languages
+```
+
+## Firewall
+
+**Gateway:** allow inbound 80 (and 8080 if the dashboard is wanted):
+```bash
+sudo ufw allow 80/tcp        # (Ubuntu/Debian) or firewalld equivalent on RHEL
+```
+**App-01:** allow inbound 8002 **only from the Gateway's IP**:
+```bash
+sudo ufw allow from <GATEWAY_IP> to any port 8002 proto tcp
+```
+**Execution machine:** no inbound ports — the Gateway reaches Judge0 over the shared
+Docker network (same host), and its API port is bound to that machine's localhost only.
+
+## Request flows (what to expect)
+
+**Application flow:** `browser → GET /login → traefik → frontend` (website pages)
+**Login flow:** `browser → POST /auth/login → traefik → APP1_URL (app-1) → Supabase → back`
+**Execution flow:** `browser → POST /api/execute → traefik → gateway-api → Judge0 → back`
+
+The full path/prefix table is in `README.md` → Routing.
+
+## Health checks
+
+```bash
+# Gateway machine
+cd gateway && docker compose ps
 curl -s http://localhost/api/health
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost/login
 
-# Verify App 1 health
-curl -s http://localhost/
+# App-01 machine
+cd gateway/app-1 && docker compose ps
+curl -s http://localhost:8002/
 
-# Verify code execution
-curl -s -X POST http://localhost/api/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "language": "python",
-    "source_code": "print(42)",
-    "test_cases": [{"input": "", "expected_output": "42"}]
-  }'
+# Execution machine
+cd gateway/judge0 && docker compose ps          # all four judge0-* healthy
 
-# Watch logs
-docker compose logs -f
-
-# Stop
-docker compose down
+# From the Gateway: end-to-end execution health
+curl -s http://localhost/api/execute/health
 ```
 
----
+Full pre-drive checklist: root `README.md` → section 9.
 
-## System 2 — Compiler Host
+## API contract — POST /api/execute
 
-### Required Software
-
-- Docker Engine 20.10+
-- Docker Compose v2.20+
-- Free host port: **8001** (Compiler API)
-
-### Commands
-
-```bash
-cd gateway/compiler-1
-
-# Build and start
-docker compose up -d --build
-
-# Verify health
-curl -s http://localhost:8001/health
-
-# List available languages
-curl -s http://localhost:8001/languages
-
-# Test execution
-curl -s -X POST http://localhost:8001/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "language": "python",
-    "source_code": "print(42)",
-    "test_cases": [{"input": "", "expected_output": "42"}]
-  }'
-
-# Stop
-docker compose down
-```
-
----
-
-## Local Single-Machine Development
-
-For testing everything on one machine:
-
-```bash
-cd gateway
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with Supabase credentials
-
-# Start all services (including Compiler 1)
-docker compose -f docker-compose.local.yml up -d --build
-
-# Verify
-curl -s http://localhost/api/health     # Gateway API
-curl -s http://localhost/               # App 1 via Gateway
-curl -s http://localhost:8001/health    # Compiler 1 (direct)
-
-# Test code execution
-curl -s -X POST http://localhost/api/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "language": "python",
-    "source_code": "print(\"hello\")",
-    "test_cases": [{"input": "", "expected_output": "hello"}]
-  }'
-
-# Stop
-docker compose -f docker-compose.local.yml down
-```
-
----
-
-## Network / Port Requirements
-
-| Connection | From | To | Port | Protocol | Purpose |
-|---|---|---|---|---|---|
-| Client → Gateway | Any | System 1 | 80 | TCP/HTTP | User traffic |
-| Gateway → Compiler | System 1 | System 2 | 8001 | TCP/HTTP | Code execution |
-| Gateway API → Compiler | System 1 | System 2 | 8001 | TCP/HTTP | /api/execute proxy |
-| Dashboard (dev) | Any | System 1 | 8080 | TCP/HTTP | Traefik dashboard |
-
-### Firewall Rules
-
-**System 1 (Gateway):**
-- Allow inbound TCP port 80 (HTTP) from client machines
-- Allow inbound TCP port 8080 (optional, for Traefik dashboard)
-- Allow outbound TCP port 8001 to System 2 (Compiler)
-
-**System 2 (Compiler):**
-- Allow inbound TCP port 8001 from System 1 only
-- No other ports need to be exposed
-
----
-
-## API Contract
-
-### POST /api/execute
-
-Execute code via Compiler 1.
+Identical regardless of execution backend.
 
 **Request:**
 ```json
 {
   "language": "python",
   "source_code": "print('hello')",
-  "test_cases": [
-    {"input": "", "expected_output": "hello"}
-  ],
-  "limits": {
-    "time_limit_seconds": 10.0,
-    "memory_limit_mb": 256,
-    "max_output_bytes": 65536
-  },
+  "test_cases": [{"input": "", "expected_output": "hello"}],
+  "limits": {"time_limit_seconds": 10.0, "memory_limit_mb": 256, "max_output_bytes": 65536},
   "session_id": "optional-session-id",
   "attempt_id": "optional-attempt-id",
   "question_id": "optional-question-id"
@@ -238,145 +201,99 @@ Execute code via Compiler 1.
   "status": "accepted",
   "language": "python",
   "execution_time_ms": 123,
-  "tests": [
-    {
-      "test_case": 1,
-      "passed": true,
-      "execution_time_ms": 20,
-      "stdout": "hello",
-      "stderr": ""
-    }
-  ],
-  "total_tests": 1,
-  "passed_tests": 1,
+  "tests": [{"test_case": 1, "passed": true, "execution_time_ms": 20, "stdout": "hello", "stderr": ""}],
+  "total_tests": 1, "passed_tests": 1,
   "session_id": "optional-session-id",
   "attempt_id": "optional-attempt-id",
   "question_id": "optional-question-id"
 }
 ```
 
-**Status Values:**
-- `accepted` — All tests passed
-- `wrong_answer` — Output doesn't match expected
-- `compilation_error` — Code failed to compile
-- `runtime_error` — Code crashed during execution
-- `time_limit_exceeded` — Execution timed out
-- `invalid_language` — Language not supported
-- `capacity_exceeded` — Server at max concurrent executions
-- `compiler_unavailable` — Compiler 1 is unreachable
-- `internal_error` — Unexpected error
+**Status values:** `accepted`, `wrong_answer`, `compilation_error`, `runtime_error`,
+`time_limit_exceeded`, `invalid_language`, `capacity_exceeded` (→ HTTP 503),
+`compiler_unavailable` (→ HTTP 502), `internal_error`.
 
-**Supported Languages:**
-- `python` — Python 3
-- `c` — C (gcc, C11)
-- `cpp` — C++ (g++, C++17)
-- `java` — Java (OpenJDK 21)
-- `sql` — SQL (SQLite)
+**Languages:** `python`, `c`, `cpp`, `java`, `sql` (SQLite).
 
-### GET /api/execute/health
-
-Check Compiler 1 health.
-
-### GET /api/execute/languages
-
-List available languages from Compiler 1.
-
----
-
-## Known Limitations
-
-1. **Application-level evaluation is not integrated.** The `evaluate_code()` function
-   in dsc-recruit is a synchronous stub. The `/api/execute` gateway endpoint
-   provides code execution independently of the app's internal evaluator.
-   To fully integrate, the app's evaluator needs to call the gateway's
-   `/api/execute` endpoint.
-
-2. **No TLS.** All communication is over plain HTTP. For production, TLS
-   termination should be added at the Traefik layer.
-
-3. **No authentication on Compiler 1.** The compiler API is open. For LAN-only
-   deployment this is acceptable; for public deployment, add API key auth.
-
-4. **Single Compiler instance.** Only one Compiler 1 is deployed. If it fails,
-   code execution is unavailable. Compiler 2/3 will be added later.
-
-5. **SQL uses SQLite.** SQL execution is sandboxed to SQLite. For production
-   SQL evaluation, consider adding PostgreSQL support.
-
----
-
-## Environment Variable Reference
+## Environment variable reference (gateway/.env)
 
 | Variable | Default | Description |
 |---|---|---|
-| `COMPILER_URL` | `http://compiler-1:8000` | Compiler 1 base URL. For LAN: `http://<IP>:8001` |
-| `COMPILER_TIMEOUT` | `60.0` | Compiler request timeout in seconds |
-| `APP1_URL` | `http://host.docker.internal:8002` | App 1 address. For LAN: `http://<IP>:8002` |
-| `COMPILER_PORT` | `8001` | Host-side port for Compiler 1 |
-| `MAX_CONCURRENT` | `4` | Max concurrent code executions |
-| `SUPABASE_URL` | — | Supabase project URL (required for App 1) |
-| `SUPABASE_SERVICE_ROLE_KEY` | — | Supabase service key (required for App 1) |
-| `SUPABASE_JWT_SECRET` | — | Supabase JWT secret (required for App 1) |
-| `TRAEFIK_HTTP_PORT` | `80` | Traefik HTTP port |
-| `TRAEFIK_DASHBOARD_PORT` | `8080` | Traefik dashboard port |
-| `APP_ENV` | `development` | Application environment tag |
+| `APP1_URL` | `http://host.docker.internal:8002` | App-01 base URL |
+| `TRAEFIK_HTTP_PORT` | `80` | front-door HTTP port |
+| `TRAEFIK_DASHBOARD_PORT` | `8080` | Traefik dashboard (dev) |
+| `APP_ENV` / `APP_VERSION` | `development` / — | shown by /api/info |
+| `SESSION_TIMEOUT_SECONDS` | `300` | idle seconds before a session goes inactive |
+| `STALE_CHECK_INTERVAL_SECONDS` | `60` | stale-checker wake-up interval |
+| `EXECUTION_BACKEND` | `judge0` | `judge0` or `compiler1` (legacy) |
+| `JUDGE0_URL` | `http://judge0-server:2358` | Judge0 API (system3 network) |
+| `JUDGE0_TIMEOUT` | `60.0` | Judge0 request timeout (s) |
+| `JUDGE0_AUTH_TOKEN` | — | must equal `AUTHN_TOKEN` in judge0.conf |
+| `JUDGE0_AUTH_HEADER` | `X-Judge0-Token` | header Judge0 checks |
+| `COMPILER_URL` | `http://host.docker.internal:8001` | legacy Compiler-1 (only for EXECUTION_BACKEND=compiler1) |
+| `COMPILER_TIMEOUT` | `60.0` | Compiler-1 timeout (s) |
 
----
+App-01 variables: see `app-1/.env.example`. Judge0 variables: see `judge0/judge0.conf.example`.
+
+## Stopping and updating
+
+```bash
+# stop a machine's stack (from its folder)
+docker compose down
+
+# update the deployment + application repos (repo root), then rebuild per machine
+git pull && (cd dsc-recruit && git pull)
+cd gateway && docker compose up -d --build            # Gateway machine
+cd ../gateway/app-1 && docker compose up -d --build   # App-01 machine (after backend changes)
+# judge0: only `docker compose up -d` needed after judge0.conf changes
+```
 
 ## Troubleshooting
 
-### Compiler Unavailable (502 from /api/execute)
-
+**502 from /auth/*, /questions/*, /coding/* (App-01 unreachable)**
 ```bash
-# Check if Compiler 1 is running
-docker ps | grep compiler
-
-# Check Compiler 1 health
-curl http://<COMPILER_IP>:8001/health
-
-# Check COMPILER_URL in .env
-echo $COMPILER_URL
+docker ps | grep app-1                 # on the App-01 machine
+curl http://<APP1_IP>:8002/            # from the Gateway machine — is it reachable?
+grep APP1_URL gateway/.env             # is the IP/port right?
+docker compose logs traefik | tail     # on the Gateway
 ```
 
-### Connection Refused
-
+**Execution returns compiler_unavailable (HTTP 502)**
 ```bash
-# Test basic connectivity
-nc -zv <COMPILER_IP> 8001
-
-# If blocked, on System 2:
-sudo ufw allow from <GATEWAY_IP> to any port 8001 proto tcp
+docker compose -f gateway/judge0/docker-compose.yml ps    # judge0 containers healthy?
+curl -s http://localhost/api/execute/health               # from the Gateway
+# token mismatch shows up as Judge0 auth errors in gateway-api logs:
+docker compose logs gateway-api | tail
 ```
 
-### App 1 Not Responding
-
+**Connection refused between machines**
 ```bash
-# Check if App 1 is running
-docker ps | grep app
-
-# Check App 1 health
-curl http://<APP1_IP>:8002/
-
-# Check APP1_URL in .env
-echo $APP1_URL
+nc -zv <APP1_IP> 8002                  # from the Gateway — firewall test
+sudo ufw allow from <GATEWAY_IP> to any port 8002 proto tcp   # on App-01
 ```
 
-### Code Execution Timeout
-
+**Container keeps stopping**
 ```bash
-# Check Compiler 1 logs
-docker logs compiler-1 --tail 20
-
-# Increase timeout
-COMPILER_TIMEOUT=120.0
+docker compose logs <service> --tail 50
 ```
 
-### SQL Execution Issues
+**SQL note:** with Judge0, SQL runs in SQLite (Judge0 language id 82). The legacy
+compiler-1 also sandboxes SQL to SQLite.
 
-```bash
-# Verify SQLite is installed in compiler container
-docker exec compiler-1 sqlite3 --version
+## Known limitations
 
-# Test SQL directly
-docker exec compiler-1 sqlite3 /tmp/test.db "SELECT 1;"
-```
+1. **No TLS.** Plain HTTP on the LAN; acceptable for the recruitment scenario.
+2. **Judge0 co-located with the Gateway.** Judge0's API is localhost-bound and the
+   `system3` network is host-local; separating them needs the manual changes in
+   ARCHITECTURE.md §11.
+3. **No authentication on the legacy Compiler-1 API.** Off by default; fine on a trusted
+   LAN. Judge0, the default, is token-protected.
+4. **Single execution backend instance.** No Compiler-02/03 yet.
+5. **Supabase requires Internet** on the App-01 machine (keys + network reachable).
+6. **App-02** is not implemented.
+
+---
+
+*This document describes the repository as it is. Older versions described a two-backend
+load-balancing demo (`backend-1`/`backend-2`) and a `System 2` compiler host — those
+descriptions are obsolete.*

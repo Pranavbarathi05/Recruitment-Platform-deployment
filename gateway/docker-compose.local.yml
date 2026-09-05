@@ -59,7 +59,7 @@ services:
               priority: 10
 
             app1-backend-local:
-              rule: "PathPrefix(\`/questions\`) || PathPrefix(\`/submission\`) || PathPrefix(\`/assessment/start\`) || PathPrefix(\`/assessment/current\`) || PathPrefix(\`/assessment/attempt\`)"
+              rule: "PathPrefix(\`/auth\`) || PathPrefix(\`/questions\`) || PathPrefix(\`/submission\`) || PathPrefix(\`/assessment/start\`) || PathPrefix(\`/assessment/current\`) || PathPrefix(\`/assessment/attempt\`) || PathPrefix(\`/coding\`) || PathPrefix(\`/admin\`)"
               entryPoints:
                 - web
               service: app1-backend
@@ -178,8 +178,8 @@ services:
   # ── Compiler 1 (Code Execution Service) ───────────────────────────────────
   compiler-1:
     build:
-      context: ../
-      dockerfile: gateway/compiler-1/Dockerfile
+      context: .
+      dockerfile: compiler-1/Dockerfile
     container_name: compiler-1-local
     restart: unless-stopped
     environment:

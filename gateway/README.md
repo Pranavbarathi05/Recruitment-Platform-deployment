@@ -1,345 +1,229 @@
-# Recruitment Platform – Phase 1: Gateway Foundation
+# Gateway Stack — Technical Reference
 
-A minimal, fully Dockerized gateway stack. No external services, no auth, no monitoring – just
-Traefik + a FastAPI gateway API + two dummy backends ready for LAN / laptop-to-laptop access.
+The Gateway is the machine candidates talk to. It runs three containers:
 
-```
-Internet / LAN
-      │
-      ▼  :80
-   Traefik  ────  /api/*  ──▶  gateway-api  (FastAPI :8000)
-      │
-      └──────────  /       ──▶  backend-1  ┐  (round-robin)
-                                backend-2  ┘
-```
+| Container | Image | Role |
+|---|---|---|
+| `traefik` | `traefik:v3.1` | front door on port 80 — forwards each request to the right place |
+| `frontend` | built from `frontend/Dockerfile` | serves the website (React SPA built from `dsc-recruit/apps/frontend`) |
+| `gateway-api` | built from `gateway-api/Dockerfile` | FastAPI helper: health/info, session tracking, code-execution proxy |
 
----
+The application backend (**App-01**, from `dsc-recruit/apps/backend`) is **not** part of
+this stack — it is a separate deployment (`app-1/`), found via `APP1_URL`. Code execution
+is proxied to the active execution backend (Judge0 by default, legacy Compiler-1 via
+`EXECUTION_BACKEND=compiler1`). See `DEPLOYMENT.md` for the multi-machine LAN setup and
+`../README.md` for the beginner guide.
 
-## Prerequisites
-
-| Requirement | Version tested |
-|---|---|
-| Docker Engine | 20.10 + |
-| Docker Compose v2 | 2.20 + |
-| Free host ports | 80, 8080 |
-
-No Python, no Traefik, no other tools needed on the host.
+> Historical note: earlier phases of this project used dummy `backend-1`/`backend-2`
+> services and a `test-backend/` folder to verify load balancing. Those are gone; the
+> phase names survive only in some test-file names.
 
 ---
 
 ## Quick start
 
 ```bash
-# 1 – enter the project directory
 cd gateway
-
-# 2 – copy and review environment variables (edit if needed)
-cp .env.example .env
-
-# 3 – build images and start all services in the background
-docker compose up --build -d
-
-# 4 – watch logs (optional)
-docker compose logs -f
+cp .env.example .env          # then edit .env (see Configuration below)
+docker compose up -d --build
+docker compose ps             # all three containers should be "healthy"
 ```
 
----
+Point your browser at `http://localhost/` — the website should load.
 
-## Shutdown
+The stack needs the external Docker network `system3` (shared with the Judge0 stack):
 
 ```bash
-# Stop and remove containers (data is stateless, nothing is lost)
-docker compose down
-
-# Stop + remove images built by this project
-docker compose down --rmi local
+docker network create system3     # once per machine
 ```
 
----
+### Configuration (`gateway/.env`)
 
-## Health test commands
+| Variable | Default | Meaning |
+|---|---|---|
+| `APP1_URL` | `http://host.docker.internal:8002` | App-01 address. LAN deployment: `http://<APP1_LAN_IP>:8002` |
+| `TRAEFIK_HTTP_PORT` | `80` | front-door port published on the host |
+| `TRAEFIK_DASHBOARD_PORT` | `8080` | Traefik dashboard port (dev convenience) |
+| `APP_ENV` | `development` | shown by `/api/info` |
+| `APP_VERSION` | — | shown by `/api/info` |
+| `SESSION_TIMEOUT_SECONDS` | `300` | idle seconds before a session is marked inactive |
+| `STALE_CHECK_INTERVAL_SECONDS` | `60` | how often the background checker runs |
+| `EXECUTION_BACKEND` | `judge0` | `judge0` (System 3) or `compiler1` (legacy) |
+| `JUDGE0_URL` | `http://judge0-server:2358` | Judge0 API (via the `system3` Docker network) |
+| `JUDGE0_AUTH_TOKEN` | — | must equal `AUTHN_TOKEN` in `judge0/judge0.conf` |
+| `JUDGE0_TIMEOUT` | `60.0` | Judge0 request timeout (seconds) |
+| `COMPILER_URL` | `http://host.docker.internal:8001` | legacy Compiler-1 address (only if `EXECUTION_BACKEND=compiler1`) |
+| `COMPILER_TIMEOUT` | `60.0` | Compiler-1 request timeout (seconds) |
+
+The frontend build receives `VITE_API_URL="."` — the website always calls the Gateway
+itself (same origin). It never talks to Supabase directly.
+
+## Routing (Traefik)
+
+Traefik's routing table is generated at container start (inline in
+`docker-compose.yml`); static settings live in `traefik/traefik.yml`. Highest priority wins:
+
+| Priority | Path | Destination |
+|---|---|---|
+| 10 | `/api/*` | `gateway-api` (internal :8000) |
+| 5 | `/auth/*`, `/questions/*`, `/submission/*`, `/assessment/start`, `/assessment/current`, `/assessment/attempt/*`, `/coding/*`, `/admin/*` | App-01 (`APP1_URL`) |
+| 1 | everything else | `frontend` (internal :8080) |
+
+The `/auth`, `/assessment`, `/coding`, `/admin`, `/submission`, `/questions` prefixes are
+the application backend's routers; the frontend is a single-page app and uses these same
+paths for its API calls.
+
+Traefik dashboard (dev only): http://localhost:8080 — HTTP → Routers shows the live table.
+
+## Gateway API endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/health` | liveness (used by the Docker healthcheck) |
+| GET | `/api/info` | version / environment / uptime |
+| POST | `/api/session/start` | create a candidate session → `session_id` |
+| POST | `/api/session/heartbeat` | refresh a session's `last_seen` |
+| POST | `/api/session/end` | mark a session inactive |
+| GET | `/api/session/{id}` | read one session |
+| GET | `/api/admin/sessions` | list all sessions |
+| GET | `/api/admin/health` | gateway uptime + session counts |
+| POST | `/api/execute` | run code via the active execution backend |
+| GET | `/api/execute/health` | is the execution backend reachable |
+| GET | `/api/execute/languages` | which languages the backend offers |
+
+Example:
 
 ```bash
-# Gateway API health
-curl -s http://localhost/api/health | python3 -m json.tool
+curl -s http://localhost/api/health
+curl -s http://localhost/api/info
 
-# Gateway API info
-curl -s http://localhost/api/info | python3 -m json.tool
-
-# Backend pool (hit root path)
-curl -s http://localhost/ | python3 -m json.tool
-
-# Docker-level health status for every container
-docker compose ps
+# execute Python via Judge0 (works as soon as the execution stack is up)
+curl -s -X POST http://localhost/api/execute \
+  -H "Content-Type: application/json" \
+  -d '{"language":"python","source_code":"print(42)","test_cases":[{"input":"","expected_output":"42"}]}'
 ```
 
-Expected responses:
+`/api/execute` request/response contract (status values such as `accepted`,
+`wrong_answer`, `compilation_error`, `runtime_error`, `time_limit_exceeded`) is identical
+for both backends — see `DEPLOYMENT.md` → API contract.
 
-```jsonc
-// GET /api/health
-{ "status": "ok", "service": "gateway-api", "timestamp": "..." }
+## Single-machine demo stack
 
-// GET /api/info
-{ "service": "gateway-api", "version": "0.1.0", "environment": "development", ... }
-
-// GET /
-{ "message": "Hello from backend-1", "backend": "backend-1", ... }
-```
-
----
-
-## Verify load balancing
-
-Send several requests and observe the `backend` field alternating:
+`docker-compose.local.yml` runs **everything on one machine** (traefik + frontend +
+gateway-api + app-1 + compiler-1 as containers on one Docker network):
 
 ```bash
-for i in $(seq 1 10); do
-  curl -s http://localhost/ | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['backend'])"
-done
+cd gateway
+docker compose -f docker-compose.local.yml up -d --build
+curl -s http://localhost/               # website
+curl -s http://localhost/api/health     # gateway-api
+docker compose -f docker-compose.local.yml \
+  exec compiler-1 python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/health').read().decode())"
+                                        # compiler-1 health (Docker-network internal; no host port in the demo)
+docker compose -f docker-compose.local.yml down
 ```
 
-You should see output like:
+Note: the demo stack has no Judge0; set `EXECUTION_BACKEND=compiler1` in `.env` so
+code execution uses the bundled compiler-1.
 
-```
-backend-1
-backend-2
-backend-1
-backend-2
-...
-```
-
-Traefik uses round-robin by default. The `X-Served-By` response header also identifies the backend:
+## LAN access from other machines
 
 ```bash
-curl -sI http://localhost/ | grep -i x-served-by
+hostname -I | awk '{print $1}'    # the machine's LAN IP, e.g. 192.168.1.42
 ```
 
----
-
-## Traefik dashboard
-
-Open **http://localhost:8080** in a browser.  
-Navigate to **HTTP → Routers** and **HTTP → Services** to inspect routing rules and backend health.
-
----
-
-## Finding your LAN IP
+Open the firewall for the front door (Ubuntu example):
 
 ```bash
-# Linux / macOS
-ip route get 1 | awk '{print $7; exit}'
-# or
-hostname -I | awk '{print $1}'
-
-# macOS (alternative)
-ipconfig getifaddr en0
-```
-
----
-
-## Accessing from another machine on the same LAN
-
-1. Find your host LAN IP using the command above (e.g. `192.168.1.42`).
-2. Ensure port **80** is open in your firewall:
-
-```bash
-# Ubuntu / Debian (ufw)
 sudo ufw allow 80/tcp
-
-# RHEL / Fedora / CentOS (firewalld)
-sudo firewall-cmd --permanent --add-port=80/tcp && sudo firewall-cmd --reload
 ```
 
-3. From the other machine:
+Then from any LAN machine: `curl http://<LAN-IP>/api/health` and open
+`http://<LAN-IP>/` in a browser.
+
+## Tests
+
+Unit tests (no running stack needed) — gateway-api and compiler-1 ship their own
+dependencies and test setups:
 
 ```bash
-curl http://192.168.1.42/api/health
-curl http://192.168.1.42/api/info
-curl http://192.168.1.42/
+cd gateway/gateway-api
+python3 -m venv .venv-test && source .venv-test/bin/activate
+pip install -r requirements.txt
+pytest -v
 ```
 
----
+Same pattern for `gateway/compiler-1` (its `requirements.txt` includes pytest).
 
-## Troubleshooting
-
-### Port 80 already in use
+Live tests (need a running stack + App-01/execution configured):
 
 ```bash
-sudo lsof -i :80          # find the process
-# Then either stop that process or change TRAEFIK_HTTP_PORT in .env:
-#   TRAEFIK_HTTP_PORT=8888
+cd gateway
+python3 -m venv .venv-integration && source .venv-integration/bin/activate
+pip install -r requirements-integration.txt
+pytest tests -v          # test_app1_deployment, test_phase3, test_integration, test_lan_connectivity
 ```
 
-### Containers not starting / unhealthy
+These test files still carry the old "Phase 3/4/6" names in places; they test the
+current endpoints.
 
+## Troubleshooting (technical)
+
+**Port 80 already in use**
 ```bash
-docker compose ps                   # check status column
-docker compose logs traefik         # Traefik errors
-docker compose logs gateway-api     # FastAPI errors
-docker compose logs backend-1       # backend errors
+sudo lsof -i :80            # find the process, or change TRAEFIK_HTTP_PORT in .env
 ```
 
-### Docker socket permission denied
-
+**"network system3 declared as external, but could not be found"**
 ```bash
-# Add your user to the docker group (log out + back in required)
-sudo usermod -aG docker $USER
+docker network create system3
 ```
 
-### Firewall blocking LAN access
-
-Check both the OS firewall **and** Docker's iptables rules:
-
+**/auth/* returns the website HTML instead of JSON**
+App-01 is not reachable at `APP1_URL`. Check:
 ```bash
-sudo iptables -L -n | grep 80
+curl -s http://<APP1_HOST>:8002/      # from the gateway machine
+docker compose logs traefik | tail    # "502 Bad Gateway" from app1-backend routes means App-01 is down
 ```
 
-If you use `ufw`, also ensure Docker's FORWARD rules aren't blocked:
-
+**Container unhealthy**
 ```bash
-sudo ufw status verbose
+docker compose ps
+docker compose logs gateway-api --tail 50
+docker compose logs traefik --tail 50
 ```
 
-### Rebuild after code changes
-
+**Docker permission denied**
 ```bash
-docker compose up --build -d
+sudo usermod -aG docker $USER   # then log out and back in
 ```
 
-### Reset everything
-
-```bash
-docker compose down --volumes --rmi local
-```
-
----
+**Judge0 errors from /api/execute** — see `judge0/README.md` (token mismatch and
+cgroup-v2 notes live there).
 
 ## Project layout
 
 ```
 gateway/
-├── .env.example          # env var template (safe to commit)
-├── docker-compose.yml    # orchestration
-├── README.md             # this file
-├── traefik/
-│   └── traefik.yml       # Traefik static config
-├── gateway-api/
-│   ├── Dockerfile        # multi-stage Python build
-│   ├── requirements.txt  # FastAPI + Uvicorn (pinned)
-│   └── app/
-│       └── main.py       # /api/health + /api/info endpoints
-└── test-backend/
-    ├── Dockerfile        # stdlib-only Python image
-    └── server.py         # self-identifying HTTP server
-```
-
----
-
-## Design decisions (Phase 1)
-
-| Decision | Rationale |
-|---|---|
-| Traefik v3.1 | Stable LTS, Docker-label routing avoids a separate config file per route |
-| FastAPI / Uvicorn | Standard async Python API framework; zero boilerplate for JSON endpoints |
-| Stdlib HTTP server for backends | No pip install; fastest possible image build; easy to swap later |
-| Multi-stage build for gateway-api | Smaller runtime image; builder layer not shipped |
-| Non-root users in all containers | Principle of least privilege; production-safe default |
-| `exposedByDefault: false` in Traefik | Containers must opt-in with `traefik.enable=true`; safer default |
-| No hardcoded IPs | All ports/env vars via `.env`; portable across any machine |
-
----
-
-## Phase 2: Session / Control Plane
-
-### New endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/session/start` | Create a new session; returns `session_id` |
-| POST | `/api/session/heartbeat` | Refresh `last_seen` for an active session |
-| POST | `/api/session/end` | Mark a session inactive (soft delete) |
-| GET | `/api/session/{id}` | Retrieve a session by ID |
-| GET | `/api/admin/sessions` | List all sessions (any status) |
-| GET | `/api/admin/health` | Gateway uptime + session counts + node stubs |
-
-### Running the unit tests (local, no Docker)
-
-```bash
-cd gateway/gateway-api
-
-# Install dependencies (use a venv if preferred)
-pip install -r requirements.txt
-
-# Run all tests with verbose output
-pytest -v
-```
-
-Expected output: **14 tests pass, 0 failures**.
-
-### Session endpoint examples
-
-```bash
-# Start a session
-SESSION=$(curl -s -X POST http://localhost/api/session/start | python3 -c \
-  "import sys,json; print(json.load(sys.stdin)['session_id'])")
-echo "Session ID: $SESSION"
-
-# Heartbeat
-curl -s -X POST http://localhost/api/session/heartbeat \
-  -H "Content-Type: application/json" \
-  -d "{\"session_id\": \"$SESSION\"}" | python3 -m json.tool
-
-# Retrieve session
-curl -s http://localhost/api/session/$SESSION | python3 -m json.tool
-
-# End session
-curl -s -X POST http://localhost/api/session/end \
-  -H "Content-Type: application/json" \
-  -d "{\"session_id\": \"$SESSION\"}" | python3 -m json.tool
-```
-
-### Admin endpoint examples
-
-```bash
-# List all sessions
-curl -s http://localhost/api/admin/sessions | python3 -m json.tool
-
-# System health (gateway uptime + session counts + 5 node stubs)
-curl -s http://localhost/api/admin/health | python3 -m json.tool
-```
-
-### Phase 2 environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SESSION_TIMEOUT_SECONDS` | `300` | Idle seconds before a session is marked inactive |
-| `STALE_CHECK_INTERVAL_SECONDS` | `60` | How often the background checker runs |
-
-### Updated project layout
-
-```
-gateway/
-├── .env.example
-├── docker-compose.yml
-├── README.md
-├── traefik/
-│   └── traefik.yml
-├── gateway-api/
+├── docker-compose.yml        ← the Gateway machine stack (traefik + frontend + gateway-api)
+├── docker-compose.local.yml  ← one-machine demo (adds app-1 + compiler-1)
+├── .env.example              ← configuration template (copy to .env; never commit .env)
+├── DEPLOYMENT.md             ← multi-machine LAN guide
+├── traefik/traefik.yml       ← Traefik static settings (entry points, providers, logs)
+├── frontend/                 ← website container (builds dsc-recruit/apps/frontend)
 │   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── pytest.ini
-│   ├── app/
-│   │   ├── main.py              # all endpoints + lifespan
-│   │   ├── session.py           # SessionRegistry (in-memory)
-│   │   ├── node_health.py       # NodeRegistry stubs
-│   │   ├── stale_checker.py     # background daemon thread
-│   │   └── routers/
-│   │       ├── session.py       # /api/session/*
-│   │       └── admin.py         # /api/admin/*
+│   └── nginx.conf
+├── gateway-api/              ← FastAPI helper (health, sessions, /api/execute proxy)
+│   ├── Dockerfile
+│   ├── app/                  ← main.py, routers/, judge0_proxy.py, compiler_proxy.py
 │   └── tests/
-│       └── test_sessions.py     # 14 unit / integration tests
-└── test-backend/
-    ├── Dockerfile
-    └── server.py
+├── app-1/                    ← App-01 standalone deployment (application backend)
+│   ├── Dockerfile            ← packages dsc-recruit/apps/backend as-is
+│   ├── docker-compose.yml
+│   └── .env.example
+├── judge0/                   ← Judge0 execution service (System 3; default backend)
+├── compiler-1/               ← legacy code runner (off by default)
+├── compiler_client/          ← small Python client for the legacy runner
+├── monitoring/               ← optional Grafana/Prometheus dashboards
+└── tests/                    ← live integration tests (need a running stack)
 ```
-
