@@ -16,9 +16,13 @@ WORKDIR /app
 # Copy frontend source from the application repository
 COPY dsc-recruit/apps/frontend/package.json ./
 COPY dsc-recruit/apps/frontend/package-lock.json ./
+COPY dsc-recruit/apps/frontend/scripts/copy-pyodide.mjs ./scripts/copy-pyodide.mjs
+
 RUN npm ci
 
 COPY dsc-recruit/apps/frontend/ ./
+
+RUN npm run copy-pyodide
 
 # Vite reads VITE_* env vars at build time
 ARG VITE_SUPABASE_URL
