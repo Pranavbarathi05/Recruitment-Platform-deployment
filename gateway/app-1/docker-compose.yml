@@ -34,6 +34,14 @@ services:
       # ── Server ──
       HOST: "0.0.0.0"
       PORT: "8000"
+      # ── Judge0 (System 3 code execution) ──
+      # app-1's backend (services/compiler.py) reads JUDGE0_BASE_URL — NOT
+      # JUDGE0_URL, which is the gateway-api's variable. Token must equal
+      # Judge0's AUTHN_TOKEN (same value as JUDGE0_AUTH_TOKEN in gateway/.env).
+      JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:?JUDGE0_BASE_URL must be set in app-1/.env}
+      JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:?JUDGE0_AUTH_TOKEN must be set in app-1/.env}
+    networks:
+      - system3
     ports:
       # Host port 8002 → Container port 8000
       # For LAN: Gateway reaches App 1 at <APP1_LAN_IP>:8002
@@ -45,3 +53,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+networks:
+  # External network shared with the Judge0 System 3 stack.
+  # Create it once:  docker network create system3
+  system3:
+    external: true
