@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 # The user requested these directories
 DIRS=(
     "." # gateway (current dir)
-    "api-1"
+    "app-1"
     "compiler-1"
     "frontend"
     "monitoring"
