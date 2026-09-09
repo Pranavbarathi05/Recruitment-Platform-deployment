@@ -2,7 +2,11 @@
 # App 1 — Standalone Docker Compose
 #
 # Runs the dsc-recruit backend independently from the Gateway.
-# Does NOT require the Gateway, Traefik, Compiler, or any other service.
+# Does NOT require the Gateway, Traefik, or any other gateway service.
+#
+# C++/Java execution requires the self-hosted Judge0 stack:
+# the app joins the external Judge0 network (system3) and talks to
+# judge0-server directly — the same architecture gateway-api uses.
 #
 # For LAN deployment, App 1 listens on 0.0.0.0:8002 so the Gateway
 # machine can reach it over the network.
@@ -42,6 +46,10 @@ services:
       JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:?JUDGE0_AUTH_TOKEN must be set in app-1/.env}
     networks:
       - system3
+      # ── Judge0 (C++/Java execution; must match judge0.conf AUTHN_HEADER) ──
+      JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-http://judge0-server:2358}
+      JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
+      JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
     ports:
       # Host port 8002 → Container port 8000
       # For LAN: Gateway reaches App 1 at <APP1_LAN_IP>:8002
@@ -57,5 +65,14 @@ services:
 networks:
   # External network shared with the Judge0 System 3 stack.
   # Create it once:  docker network create system3
+  system3:
+    external: true
+    networks:
+      - default
+      # External network shared with the Judge0 System 3 stack.
+      # Create it once:  docker network create system3
+      - system3
+
+networks:
   system3:
     external: true
