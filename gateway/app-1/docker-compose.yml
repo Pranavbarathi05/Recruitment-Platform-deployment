@@ -25,54 +25,48 @@ services:
     build:
       context: ../..
       dockerfile: gateway/app-1/Dockerfile
+
     container_name: app-1
     restart: unless-stopped
+
     environment:
       # ── Supabase (REQUIRED – app will not start without these) ──
       SUPABASE_URL: ${SUPABASE_URL:-https://your-project.supabase.co}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-your-service-role-key}
       SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-your-anon-key-here}
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-your-jwt-secret}
+
       # ── CORS ──
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:80,http://localhost:5173}
+
       # ── Server ──
       HOST: "0.0.0.0"
       PORT: "8000"
+
       # ── Judge0 (System 3 code execution) ──
-      # app-1's backend (services/compiler.py) reads JUDGE0_BASE_URL — NOT
-      # JUDGE0_URL, which is the gateway-api's variable. Token must equal
-      # Judge0's AUTHN_TOKEN (same value as JUDGE0_AUTH_TOKEN in gateway/.env).
-      JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:?JUDGE0_BASE_URL must be set in app-1/.env}
-      JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:?JUDGE0_AUTH_TOKEN must be set in app-1/.env}
-    networks:
-      - system3
-      # ── Judge0 (C++/Java execution; must match judge0.conf AUTHN_HEADER) ──
+      # app-1's backend reads JUDGE0_BASE_URL.
       JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-http://judge0-server:2358}
       JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
       JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
+
     ports:
       # Host port 8002 → Container port 8000
       # For LAN: Gateway reaches App 1 at <APP1_LAN_IP>:8002
       - "${APP1_HOST_PORT:-8002}:8000"
+
     healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" ]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 15s
 
-networks:
-  # External network shared with the Judge0 System 3 stack.
-  # Create it once:  docker network create system3
-  system3:
-    external: true
     networks:
-      - default
-      # External network shared with the Judge0 System 3 stack.
-      # Create it once:  docker network create system3
       - system3
 
+# External network shared with the Judge0 System 3 stack.
+# Create it once:
+#   docker network create system3
 networks:
   system3:
     external: true
