@@ -1,0 +1,40 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# App 1 — SQLi "Employee Portal" challenge server image
+#
+# Packages the EXISTING, deliberately-vulnerable challenge:
+#   dsc-recruit/apps/backend/challenge_server/challenge_server.py
+#
+# - Python stdlib ONLY (http.server + sqlite3) → no pip install, no
+#   third-party dependencies, no Supabase/platform credentials, no Docker
+#   socket, no privileged mode, no outbound network access.
+# - The existing seeded SQLite database (challenge.db) is copied in; it is
+#   (re)seeded automatically on startup only if missing, so a restart
+#   preserves any (synthetic) mutations made during a drive.
+# - Container runtime stays untouched — this is deployment packaging only.
+# ══════════════════════════════════════════════════════════════════════════════
+
+FROM python:3.12-alpine
+
+WORKDIR /app
+
+# Copy ONLY the challenge server and its seeded database from the app repo.
+COPY dsc-recruit/apps/backend/challenge_server/challenge_server.py ./
+COPY dsc-recruit/apps/backend/challenge_server/challenge.db ./
+
+# Non-root user; the SQLite file must be writable (candidates mutate it via
+# the SQLi payloads — e.g. ' OR 1=1 -- reading rows, sqlite journal writes).
+RUN addgroup -S challenge && adduser -S -G challenge challenge \
+    && chown -R challenge:challenge /app
+USER challenge
+
+# The server itself binds 0.0.0.0:8080 by default (CHALLENGE_HOST/CHALLENGE_PORT
+# env overrides exist but are not needed — compose sets the mapping).
+EXPOSE 8080
+
+# Offline healthcheck against the stdlib server itself (no Internet needed).
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+
+# Same command a local developer runs — no arguments needed; defaults match
+# the container requirement (0.0.0.0:8080, seeded challenge.db next to it).
+CMD ["python", "challenge_server.py"]

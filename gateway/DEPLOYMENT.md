@@ -54,6 +54,7 @@ Edit `.env`:
 
 ```bash
 APP1_URL=http://<APP1_LAN_IP>:8002      # App-01's LAN IP, port 8002
+APP1_CHALLENGE_URL=http://<APP1_LAN_IP>:8080  # same host, challenge port
 JUDGE0_AUTH_TOKEN=<same as AUTHN_TOKEN in judge0/judge0.conf>
 # TRAEFIK_HTTP_PORT=80                  # change only if port 80 is taken
 ```
@@ -67,6 +68,8 @@ docker compose up -d --build
 docker compose ps                             # wait for healthy
 curl -s http://localhost/api/health           # {"status":"ok",...}
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost/    # 200
+curl -s http://localhost/challenge/ | grep -o '<title>[^<]*</title>'
+# → <title>Employee Portal</title>  (NOT the Traefik dashboard)
 ```
 
 Find the LAN IP candidates will use:
@@ -101,10 +104,16 @@ SUPABASE_JWT_SECRET=<your-jwt-secret>
 cd gateway/app-1
 docker compose up -d --build
 curl -s http://localhost:8002/     # {"status":"Healthy","message":"API is working"}
-hostname -I | awk '{print $1}'     # its LAN IP → goes into gateway/.env as APP1_URL
+curl -s http://localhost:8080/health   # challenge server → {"status":"ok",...}
+hostname -I | awk '{print $1}'     # its LAN IP → goes into gateway/.env as
+                                   # APP1_URL and APP1_CHALLENGE_URL
 ```
 
-The Gateway reaches App-01 only on **port 8002** (map: host 8002 → container 8000).
+Two containers publish host ports on App-01: the API (host 8002 → container 8000)
+and the SQLi challenge `challenge-1` (host 8080 → container 8080, service defined
+in `gateway/app-1/docker-compose.yml`). The Gateway reaches App-01 only on those
+two ports; the challenge host port must be firewalled to the Gateway's IP only
+(see Firewall below) — candidates must never open it directly.
 
 ## Machine 3 — Execution (Judge0)
 
@@ -138,14 +147,38 @@ curl -s http://localhost/api/execute/languages
 
 ## Firewall
 
-**Gateway:** allow inbound 80 (and 8080 if the dashboard is wanted):
+### Critical: UFW does NOT filter Docker-published ports
+
+Docker-published ports are **not** filtered by UFW/INPUT rules. Traffic from another
+machine is DNAT'ed in PREROUTING and forwarded straight through the FORWARD chain
+(`DOCKER-USER → DOCKER-FORWARD → DOCKER`), never traversing INPUT — so
+`ufw deny 8080` does **nothing** for a published port (verified on this deployment).
+The only reliable restriction point is the `DOCKER-USER` chain, which Docker
+reserves for operator rules. Use the provided guard script:
+
+**App-01** (after `docker compose up -d`, as root):
 ```bash
-sudo ufw allow 80/tcp        # (Ubuntu/Debian) or firewalld equivalent on RHEL
+sudo cp gateway/app-1/challenge-firewall.sh /opt/recruit/
+sudo install -m 644 gateway/app-1/challenge-firewall.service \
+     /etc/systemd/system/challenge-firewall.service
+# Edit the unit: replace CHANGE-ME-GATEWAY-LAN-IP with the Gateway's LAN IP
+sudo systemctl daemon-reload && sudo systemctl enable --now challenge-firewall
+# One-shot without the unit:
+sudo ./gateway/app-1/challenge-firewall.sh --gateway-ip <GATEWAY_IP>
 ```
-**App-01:** allow inbound 8002 **only from the Gateway's IP**:
-```bash
-sudo ufw allow from <GATEWAY_IP> to any port 8002 proto tcp
-```
+The guard restricts ports `8080,8002` (override with `--ports`) to the Gateway IP
+on the default-route interface, matching the **pre-DNAT host port** via conntrack
+(`--ctorigdstport`) — required because plain `--dport` rules see the *container*
+port inside `DOCKER-USER` (host 8002 → container 8000 would silently slip through;
+this was caught in live kernel testing). Verify with `sudo iptables -S DOCKER-USER`.
+
+### ports exposure summary
+
+**Gateway:** inbound 80 only (the single candidate entry point; 8080 dashboard —
+keep LAN-restricted if enabled).
+**App-01:** `8002` (API) and `8080` (challenge-1) — Docker-published, restricted to
+the Gateway IP by the `DOCKER-USER` guard above. Candidates must never reach them
+directly; the only candidate-facing URL is `http://<GATEWAY_IP>/challenge/`.
 **Execution machine:** no inbound ports — the Gateway reaches Judge0 over the shared
 Docker network (same host), and its API port is bound to that machine's localhost only.
 
@@ -154,6 +187,11 @@ Docker network (same host), and its API port is bound to that machine's localhos
 **Application flow:** `browser → GET /login → traefik → frontend` (website pages)
 **Login flow:** `browser → POST /auth/login → traefik → APP1_URL (app-1) → Supabase → back`
 **Execution flow:** `browser → POST /api/execute → traefik → gateway-api → Judge0 → back`
+**Challenge flow:** `browser → GET|POST /challenge/* → traefik (StripPrefix /challenge)
+→ APP1_CHALLENGE_URL (challenge-1 on App-01) → back`
+The Hands-On iframe loads `/challenge/` same-origin on the Gateway; Traefik's own
+dashboard stays on port 8080 of the **Gateway** machine (different machine/port
+namespace from App-01's challenge port — do not confuse them).
 
 The full path/prefix table is in `README.md` → Routing.
 

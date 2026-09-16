@@ -1,0 +1,16 @@
+[Unit]
+Description=Restrict Docker-published challenge/API ports to the Gateway IP (DOCKER-USER guard)
+After=docker.service network-online.target
+Wants=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+# EDIT: set the Gateway machine's LAN IP (and --iface if auto-detect is wrong).
+# Add one --gateway-ip per gateway/app machine that must reach these ports.
+ExecStart=/opt/recruit/challenge-firewall.sh --gateway-ip CHANGE-ME-GATEWAY-LAN-IP
+ExecStop=/opt/recruit/challenge-firewall.sh --remove
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

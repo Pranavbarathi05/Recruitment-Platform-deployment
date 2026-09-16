@@ -8,6 +8,13 @@
 # the app joins the external Judge0 network (system3) and talks to
 # judge0-server directly — the same architecture gateway-api uses.
 #
+# The SQLi "Employee Portal" challenge server (Hands-On section) runs here
+# too, as the `challenge-1` service (Dockerfile.challenge, stdlib only).
+# It is published on the host as ${APP1_CHALLENGE_PORT:-8080} so the GATEWAY
+# machine's Traefik can reach it over the LAN and route /challenge/* to it.
+# Candidates must NEVER open http://<APP1_LAN_IP>:8080 directly — restrict
+# the host firewall to the Gateway's IP only (see .env.example / DEPLOYMENT.md).
+#
 # For LAN deployment, App 1 listens on 0.0.0.0:8002 so the Gateway
 # machine can reach it over the network.
 #
@@ -16,6 +23,7 @@
 #   # Edit .env with real Supabase credentials
 #   docker compose up -d --build
 #   curl http://localhost:8002/
+#   curl http://localhost:8080/health   # challenge server (Employee Portal)
 #   docker compose down
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -44,17 +52,11 @@ services:
       PORT: "8000"
 
       # ── Judge0 (System 3 code execution) ──
-      # app-1's backend (services/compiler.py) reads JUDGE0_BASE_URL — NOT
-      # JUDGE0_URL, which is the gateway-api's variable. Token must equal
-      # Judge0's AUTHN_TOKEN (same value as JUDGE0_AUTH_TOKEN in gateway/.env).
-      JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:?JUDGE0_BASE_URL must be set in app-1/.env}
-      JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:?JUDGE0_AUTH_TOKEN must be set in app-1/.env}
-    networks:
-      - system3
-      # ── Judge0 (C++/Java execution; must match judge0.conf AUTHN_HEADER) ──
       JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-http://judge0-server:2358}
       JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
       JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
+    networks:
+      - system3
     ports:
       # Host port 8002 → Container port 8000
       # For LAN: Gateway reaches App 1 at <APP1_LAN_IP>:8002
@@ -67,17 +69,45 @@ services:
       retries: 3
       start_period: 15s
 
+  # ── SQLi challenge server (Hands-On "Employee Portal") ──────────────────────
+  # Existing stdlib-only challenge (dsc-recruit/apps/backend/challenge_server).
+  # Starts automatically with this stack. Container binds 0.0.0.0:8080.
+  # HOST port ${APP1_CHALLENGE_PORT:-8080} is published ONLY so the Gateway
+  # machine's Traefik can route /challenge/* to it across the physical
+  # machines (Docker bridge networks do NOT span hosts). Firewall the host
+  # port to the Gateway's IP (see .env.example) so candidates cannot reach
+  # http://<APP1_LAN_IP>:8080 directly — they must go through the Gateway.
+  challenge-1:
+    build:
+      context: ../..
+      dockerfile: gateway/app-1/Dockerfile.challenge
+
+    container_name: challenge-1
+    restart: unless-stopped
+
+    # Deliberately NO environment: no Supabase/platform credentials, no
+    # secrets, no Docker socket, no privileged mode, no host file mounts.
+    # The challenge uses only its own seeded SQLite database.
+
+    networks:
+      - challenge_net
+
+    ports:
+      # Host ${APP1_CHALLENGE_PORT:-8080} → challenge container 8080.
+      # Gateway/Traefik target: APP1_CHALLENGE_URL=http://<APP1_LAN_IP>:8080
+      - "${APP1_CHALLENGE_BIND:-0.0.0.0}:${APP1_CHALLENGE_PORT:-8080}:8080"
+
+    expose:
+      - "8080"
+
 networks:
   # External network shared with the Judge0 System 3 stack.
   # Create it once:  docker network create system3
   system3:
     external: true
-    networks:
-      - default
-      # External network shared with the Judge0 System 3 stack.
-      # Create it once:  docker network create system3
-      - system3
 
-networks:
-  system3:
-    external: true
+  # Internal-only network for challenge containers (challenge-1 now,
+  # challenge-2 later on App-2). Nothing outside App-1's compose joins it;
+  # the only path to a challenge is the host port above → Gateway/Traefik.
+  challenge_net:
+    driver: bridge

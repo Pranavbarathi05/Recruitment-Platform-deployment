@@ -14,6 +14,10 @@
 #   /assessment/start|current|...   → App 1 backend (priority 5)
 #   /coding/*                       → App 1 backend (priority 5)
 #   /admin/*                        → App 1 backend (priority 5)
+#   /challenge/*                    → SQLi challenge server on App 1
+#                                     (APP1_CHALLENGE_URL, e.g. http://<APP1_LAN_IP>:8080;
+#                                      App 1 publishes the challenge container on that host
+#                                      port and firewalls it to this machine)
 #   /* (everything else)            → frontend SPA (priority 1, catch-all)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -43,6 +47,22 @@ services:
               loadBalancer:
                 servers:
                   - url: "http://gateway-api:8000"
+            # Hands-On SQLi challenge pool. App-1's challenge server today;
+            # add another server line (e.g. App-2's challenge URL) to
+            # load-balance challenge-2 into the same pool later.
+            challenge-svc:
+              loadBalancer:
+                servers:
+                  - url: "${APP1_CHALLENGE_URL:-http://host.docker.internal:8080}"
+
+          # Strip /challenge so the challenge server sees its native paths
+          # (/, /login, /health) — exactly as when accessed directly on
+          # APP-1:8080. /challenge and /challenge/ both resolve to /.
+          middlewares:
+            challenge-stripprefix:
+              stripPrefix:
+                prefixes:
+                  - "/challenge"
 
           routers:
             gateway-api-file:
@@ -59,6 +79,15 @@ services:
               service: app1-backend
               priority: 5
 
+            challenge-routes:
+              rule: "PathPrefix(\`/challenge\`)"
+              entryPoints:
+                - web
+              service: challenge-svc
+              middlewares:
+                - challenge-stripprefix
+              priority: 8
+
             frontend-spa:
               rule: "PathPrefix(\`/\`)"
               entryPoints:
@@ -70,6 +99,11 @@ services:
         exec traefik --configFile=/etc/traefik/traefik.yml
     environment:
       APP1_URL: ${APP1_URL:-http://host.docker.internal:8002}
+      # Hands-On SQLi challenge server (Employee Portal). Published by App-1's
+      # compose on its host (APP1_CHALLENGE_PORT there, default 8080) and
+      # firewalled to this machine. LAN: http://<APP1_LAN_IP>:8080
+      # (NEVER the dashboard :8080 on THIS machine — that is Traefik's own.)
+      APP1_CHALLENGE_URL: ${APP1_CHALLENGE_URL:-http://host.docker.internal:8080}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
