@@ -1,0 +1,43 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# App 2 — SQLi "Employee Portal" challenge server image (challenge-2)
+#
+# Replica of gateway/app-1/Dockerfile.challenge: the SAME challenge
+# implementation and the SAME seeded database, so challenge-1 and challenge-2
+# behave identically for candidates.
+#
+#   dsc-recruit/apps/backend/challenge_server/challenge_server.py
+#   dsc-recruit/apps/backend/challenge_server/challenge.db   (seeded)
+#
+# - Python stdlib ONLY (http.server + sqlite3) → no pip install, no
+#   third-party dependencies, no Supabase/platform credentials, no Docker
+#   socket, no privileged mode, no outbound network access.
+# - The seeded SQLite database is copied in; it is (re)seeded automatically on
+#   startup only if missing, so a restart preserves any (synthetic) mutations
+#   made during a drive. challenge-2 keeps its own copy of the database — it
+#   never shares state with challenge-1.
+# ══════════════════════════════════════════════════════════════════════════════
+
+FROM python:3.12-alpine
+
+WORKDIR /app
+
+# Copy ONLY the challenge server and its seeded database from the app repo.
+COPY dsc-recruit/apps/backend/challenge_server/challenge_server.py ./
+COPY dsc-recruit/apps/backend/challenge_server/challenge.db ./
+
+# Non-root user; the SQLite file must be writable (candidates mutate it via
+# the SQLi payloads — e.g. ' OR 1=1 -- reading rows, sqlite journal writes).
+RUN addgroup -S challenge && adduser -S -G challenge challenge \
+    && chown -R challenge:challenge /app
+USER challenge
+
+# The server itself binds 0.0.0.0:8080 by default (CHALLENGE_HOST/CHALLENGE_PORT
+# env overrides exist but are not needed — compose sets the mapping).
+EXPOSE 8080
+
+# Offline healthcheck against the stdlib server itself (no Internet needed).
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+
+# Same command a local developer runs — no arguments needed.
+CMD ["python", "challenge_server.py"]

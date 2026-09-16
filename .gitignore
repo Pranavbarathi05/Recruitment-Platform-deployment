@@ -7,3 +7,7 @@ node_modules/
 
 # Judge0 System 3 secrets
 gateway/judge0/judge0.conf
+
+# Deployment test configuration — LAN addresses and the shared compiler token
+# are never committed (deployment-tests/.env.example is the template).
+deployment-tests/.env

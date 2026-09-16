@@ -1,0 +1,24 @@
+[Unit]
+Description=Restrict Docker-published ports to specific source IPs (DOCKER-USER guard)
+Documentation=file:///opt/recruit/docker-port-guard.sh
+After=docker.service network-online.target
+Wants=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+# Install on each machine that publishes ports, then edit the line below.
+#
+# SYSTEM 2 App-1  : --gateway-ip CHANGE-ME-GATEWAY-LAN-IP
+# SYSTEM 4 App-2  : --gateway-ip CHANGE-ME-GATEWAY-LAN-IP
+# SYSTEM 3/5/6 Compiler-1/2/3 :
+#     --ports 2358 --gateway-ip CHANGE-ME-GATEWAY-LAN-IP \
+#                  --gateway-ip CHANGE-ME-APP1-LAN-IP --gateway-ip CHANGE-ME-APP2-LAN-IP
+#
+# Add --iface <name> if the auto-detected default-route interface is wrong.
+ExecStart=/opt/recruit/docker-port-guard.sh --gateway-ip CHANGE-ME-GATEWAY-LAN-IP
+ExecStop=/opt/recruit/docker-port-guard.sh --remove
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

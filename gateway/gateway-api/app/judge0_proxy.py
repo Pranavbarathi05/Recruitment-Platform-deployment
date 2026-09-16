@@ -34,6 +34,7 @@ from typing import Any, Optional
 
 import httpx
 
+from . import judge0_pool
 from .execute_schemas import (
     ExecuteRequest,
     ExecuteResponse,
@@ -63,7 +64,12 @@ def _deb64(value: Optional[str]) -> Optional[str]:
         return value
 
 # ── Configuration ────────────────────────────────────────────────────────────
+# Single-node address (legacy / local development). Still used for the
+# one-node case and in operator-facing error messages.
 JUDGE0_URL = os.getenv("JUDGE0_URL", "http://judge0-server:2358")
+# The Compiler-1/2/3 pool this gateway distributes submissions across.
+# COMPILER_1_URL..COMPILER_3_URL when set, otherwise [JUDGE0_URL].
+JUDGE0_POOL: list[str] = judge0_pool.resolve_pool()
 JUDGE0_TIMEOUT = float(os.getenv("JUDGE0_TIMEOUT", "60.0"))
 JUDGE0_AUTH_HEADER = os.getenv("JUDGE0_AUTH_HEADER", "X-Judge0-Token")
 JUDGE0_AUTH_TOKEN = os.getenv("JUDGE0_AUTH_TOKEN", "")
@@ -134,7 +140,13 @@ def _headers() -> dict[str, str]:
 
 
 def _judge0_url(path: str) -> str:
-    return f"{JUDGE0_URL.rstrip('/')}/{path.lstrip('/')}"
+    """URL on the legacy single node (error messages / single-node helpers)."""
+    return _node_url(JUDGE0_URL, path)
+
+
+def _node_url(node: str, path: str) -> str:
+    """URL on a specific compiler node."""
+    return f"{node.rstrip('/')}/{path.lstrip('/')}"
 
 
 def _truncate(text: str, max_bytes: int) -> str:
@@ -148,21 +160,22 @@ def _truncate(text: str, max_bytes: int) -> str:
 
 # ── Language mapping ─────────────────────────────────────────────────────────
 
-def fetch_languages() -> list[dict[str, Any]]:
-    """Return active languages from Judge0 (uses the shared http client)."""
+def fetch_languages(node: Optional[str] = None) -> list[dict[str, Any]]:
+    """Return active languages from one Judge0 node (default: legacy node)."""
+    target = node or JUDGE0_URL
     try:
         with httpx.Client(timeout=JUDGE0_TIMEOUT) as client:
-            resp = client.get(_judge0_url("languages"), headers=_headers())
+            resp = client.get(_node_url(target, "languages"), headers=_headers())
             resp.raise_for_status()
             data = resp.json()
             if isinstance(data, list):
                 return data
             return []
     except httpx.HTTPStatusError as e:
-        logger.warning("Judge0 /languages HTTP %d: %s", e.response.status_code, e.response.text[:200])
+        logger.warning("Judge0 /languages HTTP %d on %s: %s", e.response.status_code, target, e.response.text[:200])
         raise
     except (httpx.ConnectError, httpx.TimeoutException) as e:
-        logger.error("Judge0 /languages unreachable: %s", e)
+        logger.error("Judge0 /languages unreachable on %s: %s", target, e)
         raise
 
 
@@ -197,7 +210,12 @@ def resolve_language_ids(languages: list[dict[str, Any]]) -> dict[str, Optional[
 
 
 def get_language_ids(force: bool = False) -> dict[str, Optional[int]]:
-    """Resolve language ids, cached with a TTL. Raises on Judge0 unavailability."""
+    """Resolve language ids, cached with a TTL. Raises on Judge0 unavailability.
+
+    Every compiler node runs the same Judge0 image, so the language map is
+    identical across the pool: the first reachable node answers for all of them
+    (tried in round-robin order so the read load is spread too).
+    """
     global _language_ids_cache, _language_ids_fetched_at
     now = time.monotonic()
     if (
@@ -205,12 +223,22 @@ def get_language_ids(force: bool = False) -> dict[str, Optional[int]]:
         or _language_ids_cache is None
         or (now - _language_ids_fetched_at) > JUDGE0_LANGUAGE_CACHE_TTL
     ):
-        _language_ids_cache = resolve_language_ids(fetch_languages())
-        _language_ids_fetched_at = now
-        logger.info(
-            "Judge0 language map: %s",
-            {k: v for k, v in _language_ids_cache.items() if v is not None},
-        )
+        last_error: Optional[Exception] = None
+        for node in judge0_pool.failover_order(judge0_pool.next_node(JUDGE0_POOL), JUDGE0_POOL):
+            try:
+                languages = fetch_languages(node)
+            except Exception as e:  # node down -> try the next compiler
+                last_error = e
+                continue
+            _language_ids_cache = resolve_language_ids(languages)
+            _language_ids_fetched_at = now
+            logger.info(
+                "Judge0 language map (from %s): %s",
+                node,
+                {k: v for k, v in _language_ids_cache.items() if v is not None},
+            )
+            return _language_ids_cache
+        raise last_error if last_error is not None else ConnectionError("no compiler node configured")
     return _language_ids_cache
 
 
@@ -267,12 +295,17 @@ def _build_submission_payload(
     }
 
 
-def _submit_submission(payload: dict[str, Any]) -> str:
-    """POST a submission to the queue; returns the token."""
+def _submit_submission(payload: dict[str, Any], node: str = "") -> str:
+    """POST a submission to one node's queue; returns the token.
+
+    The token is only valid on the node that accepted it, so callers must pass
+    the same `node` when polling.
+    """
+    target = node or JUDGE0_URL
     try:
         with httpx.Client(timeout=JUDGE0_TIMEOUT) as client:
             resp = client.post(
-                _judge0_url("submissions?base64_encoded=true&wait=false"),
+                _node_url(target, "submissions?base64_encoded=true&wait=false"),
                 json=payload,
                 headers=_headers(),
             )
@@ -287,16 +320,17 @@ def _submit_submission(payload: dict[str, Any]) -> str:
             f"Judge0 rejected submission (HTTP {e.response.status_code}): {e.response.text[:300]}"
         )
     except httpx.ConnectError as e:
-        raise ExecutionServiceUnavailable(f"Judge0 unreachable at {JUDGE0_URL}: {e}", "connect")
+        raise ExecutionServiceUnavailable(f"Judge0 unreachable at {target}: {e}", "connect")
     except httpx.TimeoutException as e:
-        raise ExecutionServiceUnavailable(f"Judge0 submission POST timed out: {e}", "timeout")
+        raise ExecutionServiceUnavailable(f"Judge0 submission POST timed out on {target}: {e}", "timeout")
 
 
-def _get_submission(token: str) -> dict[str, Any]:
-    """Fetch a submission's details."""
+def _get_submission(token: str, node: str = "") -> dict[str, Any]:
+    """Fetch a submission's details from the node that queued it."""
+    target = node or JUDGE0_URL
     with httpx.Client(timeout=JUDGE0_TIMEOUT) as client:
         resp = client.get(
-            _judge0_url(f"submissions/{token}?base64_encoded=true"),
+            _node_url(target, f"submissions/{token}?base64_encoded=true"),
             headers=_headers(),
         )
         if resp.status_code >= 400:
@@ -310,11 +344,15 @@ def _get_submission(token: str) -> dict[str, Any]:
         return resp.json()
 
 
-def _poll_submission(token: str, max_wait: float) -> dict[str, Any]:
-    """Poll until a final status or the deadline expires."""
+def _poll_submission(token: str, max_wait: float, node: str = "") -> dict[str, Any]:
+    """Poll until a final status or the deadline expires.
+
+    Polling is always against the node that accepted the submission (a Judge0
+    token does not exist on any other node).
+    """
     deadline = time.monotonic() + min(max_wait, JUDGE0_MAX_POLL_SECONDS)
     while time.monotonic() < deadline:
-        data = _get_submission(token)
+        data = _get_submission(token, node)
         status_id = int(data.get("status", {}).get("id", 1))
         if status_id in _FINAL_JUDGE0_STATUSES:
             return data
@@ -439,21 +477,57 @@ def execute_on_judge0(request: ExecuteRequest) -> ExecuteResponse:
             )
         else:
             payload = _build_submission_payload(request, judge0_id, tc.input)
-        try:
-            token = _submit_submission(payload)
-            max_wait = min(
-                payload["wall_time_limit"] + 10.0 + JUDGE0_QUEUE_ALLOWANCE_SECONDS,
-                JUDGE0_MAX_POLL_SECONDS,
+        # ── Pick a compiler node (round-robin) and POST the submission ──────
+        # The node that accepts is remembered for this submission's polling.
+        # A node that is unreachable or whose queue is full is skipped, so one
+        # dead Compiler node cannot fail a candidate's run while another
+        # Compiler node is healthy.
+        token: Optional[str] = None
+        node = ""
+        submit_error: Optional[Exception] = None
+        for candidate in judge0_pool.failover_order(
+            judge0_pool.next_node(JUDGE0_POOL), JUDGE0_POOL
+        ):
+            try:
+                token = _submit_submission(payload, candidate)
+                node = candidate
+                break
+            except ExecutionServiceUnavailable as e:
+                submit_error = e
+                logger.warning(
+                    "Compiler node %s unavailable (%s), trying next node", candidate, e.reason
+                )
+                continue
+            except Judge0SubmissionError as e:
+                submit_error = e
+                break
+
+        if token is None:
+            if isinstance(submit_error, Judge0SubmissionError):
+                logger.error("Judge0 rejected the submission: %s", submit_error)
+                return ExecuteResponse(
+                    status=ExecutionStatus.internal_error,
+                    language=lang,
+                    execution_time_ms=int((time.monotonic() - overall_start) * 1000),
+                    tests=results,
+                    error=str(submit_error),
+                    failed_test=failed_test,
+                    total_tests=len(request.test_cases),
+                    passed_tests=sum(1 for r in results if r.passed),
+                    session_id=request.session_id,
+                    attempt_id=request.attempt_id,
+                    question_id=request.question_id,
+                )
+            pool_error = submit_error or ExecutionServiceUnavailable(
+                "no compiler node is configured or reachable", "connect"
             )
-            submission = _poll_submission(token, max_wait)
-        except ExecutionServiceUnavailable as e:
-            logger.error("Judge0 unavailable while executing: %s", e)
+            logger.error("No compiler node accepted the submission: %s", pool_error)
             return ExecuteResponse(
                 status=ExecutionStatus.compiler_unavailable,
                 language=lang,
                 execution_time_ms=int((time.monotonic() - overall_start) * 1000),
                 tests=results,
-                error=str(e),
+                error=str(pool_error),
                 failed_test=failed_test,
                 total_tests=len(request.test_cases),
                 passed_tests=sum(1 for r in results if r.passed),
@@ -461,9 +535,17 @@ def execute_on_judge0(request: ExecuteRequest) -> ExecuteResponse:
                 attempt_id=request.attempt_id,
                 question_id=request.question_id,
             )
-        except Judge0SubmissionError as e:
+
+        try:
+            max_wait = min(
+                payload["wall_time_limit"] + 10.0 + JUDGE0_QUEUE_ALLOWANCE_SECONDS,
+                JUDGE0_MAX_POLL_SECONDS,
+            )
+            submission = _poll_submission(token, max_wait, node)
+        except ExecutionServiceUnavailable as e:
+            logger.error("Compiler node %s lost while polling: %s", node, e)
             return ExecuteResponse(
-                status=ExecutionStatus.internal_error,
+                status=ExecutionStatus.compiler_unavailable,
                 language=lang,
                 execution_time_ms=int((time.monotonic() - overall_start) * 1000),
                 tests=results,
@@ -520,32 +602,69 @@ def execute_on_judge0(request: ExecuteRequest) -> ExecuteResponse:
 
 
 def check_judge0_health() -> dict[str, Any]:
-    """Probe Judge0 and report server info plus the resolved language map."""
+    """Probe every compiler node and report the pool + resolved language map.
+
+    `status` is "ok" when at least one node answers and "unreachable" when none
+    do. The language map is identical on every node (same Judge0 image), so it
+    is reported once, from the first healthy node.
+    """
+    nodes: list[dict[str, Any]] = []
+    errors: list[str] = []
+    healthy_node: Optional[str] = None
+    about: dict[str, Any] = {}
+
+    for node in JUDGE0_POOL:
+        entry: dict[str, Any] = {"url": node, "status": "unreachable"}
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                about_resp = client.get(_node_url(node, "about"), headers=_headers())
+                about_resp.raise_for_status()
+                about = about_resp.json()
+            entry["status"] = "ok"
+            entry["version"] = about.get("version")
+            if healthy_node is None:
+                healthy_node = node
+        except Exception as e:
+            entry["error"] = f"{type(e).__name__}: {e}"
+            errors.append(f"{node}: {type(e).__name__}: {e}")
+        nodes.append(entry)
+
+    base: dict[str, Any] = {
+        "service": "judge0",
+        "judge0_url": JUDGE0_URL,
+        "pool": judge0_pool.describe_pool(),
+        "compiler_pool_size": len(JUDGE0_POOL),
+        "nodes": nodes,
+    }
+
+    if healthy_node is None:
+        return {
+            **base,
+            "status": "unreachable",
+            "error": "; ".join(errors) or "no compiler node configured",
+        }
+
     try:
-        with httpx.Client(timeout=10.0) as client:
-            about_resp = client.get(_judge0_url("about"), headers=_headers())
-            about_resp.raise_for_status()
-            about = about_resp.json()
-        languages = fetch_languages()
+        languages = fetch_languages(healthy_node)
         resolved = resolve_language_ids(languages)
         names: dict[str, Optional[str]] = {}
         langs_by_id = {int(l["id"]): l["name"] for l in languages}
         for platform, lid in resolved.items():
             names[platform] = langs_by_id.get(lid) if lid is not None else None
         return {
+            **base,
             "status": "ok",
-            "service": "judge0",
             "version": about.get("version"),
-            "judge0_url": JUDGE0_URL,
+            "serving_node": healthy_node,
             "languages": names,
             "language_id_map": resolved,
         }
     except Exception as e:
         return {
+            **base,
             "status": "unreachable",
-            "service": "judge0",
+            "serving_node": healthy_node,
             "error": f"{type(e).__name__}: {e}",
-            "judge0_url": JUDGE0_URL,
         }
 
 

@@ -1,24 +1,35 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Recruitment Platform – Gateway
+# Recruitment Platform – Gateway   (SYSTEM 1)
 # ══════════════════════════════════════════════════════════════════════════════
-# Services:
-#   traefik       – reverse proxy (entry point)
-#   gateway-api   – session control, health, execute (/api/*)
-#   frontend      – React SPA (/, /login, /domains, /dashboard, etc.)
+# The machine candidates talk to. Three containers:
+#   traefik       – reverse proxy (the only candidate-facing entry point)
+#   gateway-api   – sessions, health, /api/*, code-execution pool client
+#   frontend      – React SPA
 #
-# Routing (file provider, priorities decide winner on overlap):
-#   /api/*                          → gateway-api  (priority 10)
-#   /auth/*                         → App 1 backend (priority 5)
-#   /questions/*                    → App 1 backend (priority 5)
-#   /submission/*                   → App 1 backend (priority 5)
-#   /assessment/start|current|...   → App 1 backend (priority 5)
-#   /coding/*                       → App 1 backend (priority 5)
-#   /admin/*                        → App 1 backend (priority 5)
-#   /challenge/*                    → SQLi challenge server on App 1
-#                                     (APP1_CHALLENGE_URL, e.g. http://<APP1_LAN_IP>:8080;
-#                                      App 1 publishes the challenge container on that host
-#                                      port and firewalls it to this machine)
-#   /* (everything else)            → frontend SPA (priority 1, catch-all)
+# Routing (file provider, priorities decide the winner on overlap):
+#   /api/*                          → gateway-api                 (priority 10)
+#   /auth/*, /questions/*, /submission/*, /assessment/*, /coding/*,
+#   /admin/*                        → app-backend pool            (priority 5)
+#                                     [APP1_URL, APP2_URL]
+#   /challenge/*                    → challenge pool              (priority 8)
+#                                     [APP1_CHALLENGE_URL, APP2_CHALLENGE_URL]
+#   /* (everything else)            → frontend SPA                (priority 1)
+#
+# POOLS: each server list is generated at container start from the addresses in
+# .env. Machines that are not configured are simply absent from the list, so:
+#   * today, with only App-1 set, the behaviour is identical to a single-backend
+#     deployment (one server per pool);
+#   * adding App-2 is a two-line .env change (APP2_URL, APP2_CHALLENGE_URL) and
+#     `docker compose up -d` — nothing here needs editing;
+#   * Traefik health-checks the pools and stops sending traffic to a machine
+#     that is unhealthy.
+#
+# The Gateway discovers App/Compiler machines by address (no Docker networking
+# across physical machines): App-1's backend and challenge ports are published
+# on the App-1 machine and firewalled to this machine's IP. See DEPLOYMENT.md.
+#
+# Candidate-visible URLs are always Gateway-relative: http://<GATEWAY_IP>/ ,
+# /api/*, /challenge/ . No internal machine address is ever sent to a browser.
 # ══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -32,81 +43,120 @@ services:
       - "/bin/sh"
       - "-c"
       - |
-        cat > /etc/traefik/dynamic.yml << DYNEOF
-        http:
-          services:
-            app1-backend:
-              loadBalancer:
-                servers:
-                  - url: "$APP1_URL"
-            frontend-spa:
-              loadBalancer:
-                servers:
-                  - url: "http://frontend:8080"
-            gateway-api-svc:
-              loadBalancer:
-                servers:
-                  - url: "http://gateway-api:8000"
-            # Hands-On SQLi challenge pool. App-1's challenge server today;
-            # add another server line (e.g. App-2's challenge URL) to
-            # load-balance challenge-2 into the same pool later.
-            challenge-svc:
-              loadBalancer:
-                servers:
-                  - url: "${APP1_CHALLENGE_URL:-http://host.docker.internal:8080}"
+        set -eu
 
-          # Strip /challenge so the challenge server sees its native paths
-          # (/, /login, /health) — exactly as when accessed directly on
-          # APP-1:8080. /challenge and /challenge/ both resolve to /.
-          middlewares:
-            challenge-stripprefix:
-              stripPrefix:
-                prefixes:
-                  - "/challenge"
+        # Generate one YAML server entry per configured address. Empty values
+        # (an unconfigured machine) are skipped, so a pool always contains at
+        # least the machines this deployment actually has.
+        #
+        # Safety net: a pool with zero servers would make Traefik reject its
+        # whole dynamic configuration (taking the website down with it), so an
+        # empty pool degrades to a closed port instead — one route returns 502
+        # and everything else keeps working.
+        pool_servers() {
+          _count=0
+          for url in "$$@"; do
+            [ -n "$$url" ] || continue
+            echo "          - url: \"$$url\""
+            _count=$$((_count + 1))
+          done
+          if [ "$$_count" -eq 0 ]; then
+            echo "WARNING: Traefik pool has no configured server; using a closed port" >&2
+            echo '          - url: "http://127.0.0.1:9"'
+          fi
+          return 0
+        }
 
-          routers:
-            gateway-api-file:
-              rule: "PathPrefix(\`/api\`)"
-              entryPoints:
-                - web
-              service: gateway-api-svc
-              priority: 10
+        {
+          echo 'http:'
+          echo '  services:'
+          echo '    # Application backends: App-1, plus App-2 when APP2_URL is set.'
+          echo '    app-backend:'
+          echo '      loadBalancer:'
+          echo '        healthCheck:'
+          echo '          path: /'
+          echo '          interval: 10s'
+          echo '          timeout: 3s'
+          echo '        servers:'
+          pool_servers "$${APP1_URL:-}" "$${APP2_URL:-}"
 
-            app1-backend-routes:
-              rule: "PathPrefix(\`/auth\`) || PathPrefix(\`/questions\`) || PathPrefix(\`/submission\`) || PathPrefix(\`/assessment/start\`) || PathPrefix(\`/assessment/current\`) || PathPrefix(\`/assessment/attempt\`) || PathPrefix(\`/coding\`) || PathPrefix(\`/admin\`)"
-              entryPoints:
-                - web
-              service: app1-backend
-              priority: 5
+          echo '    # Hands-On SQLi challenge servers (same pool shape as above).'
+          echo '    challenge-svc:'
+          echo '      loadBalancer:'
+          echo '        healthCheck:'
+          echo '          path: /health'
+          echo '          interval: 10s'
+          echo '          timeout: 3s'
+          echo '        servers:'
+          pool_servers "$${APP1_CHALLENGE_URL:-}" "$${APP2_CHALLENGE_URL:-}"
 
-            challenge-routes:
-              rule: "PathPrefix(\`/challenge\`)"
-              entryPoints:
-                - web
-              service: challenge-svc
-              middlewares:
-                - challenge-stripprefix
-              priority: 8
+          echo '    # The Gateway machine itself.'
+          echo '    frontend-spa:'
+          echo '      loadBalancer:'
+          echo '        servers:'
+          echo '          - url: "http://frontend:8080"'
+          echo '    gateway-api-svc:'
+          echo '      loadBalancer:'
+          echo '        servers:'
+          echo '          - url: "http://gateway-api:8000"'
 
-            frontend-spa:
-              rule: "PathPrefix(\`/\`)"
-              entryPoints:
-                - web
-              service: frontend-spa
-              priority: 1
+          echo '  middlewares:'
+          echo '    # Strip /challenge so the challenge server sees its native paths'
+          echo '    # (/, /login, /health) — exactly as when accessed directly.'
+          echo '    # /challenge and /challenge/ both resolve to /.'
+          echo '    challenge-stripprefix:'
+          echo '      stripPrefix:'
+          echo '        prefixes:'
+          echo '          - "/challenge"'
 
-        DYNEOF
+          echo '  routers:'
+          echo '    gateway-api-file:'
+          echo '      rule: "PathPrefix(`/api`)"'
+          echo '      entryPoints:'
+          echo '        - web'
+          echo '      service: gateway-api-svc'
+          echo '      priority: 10'
+          echo ''
+          echo '    app-backend-routes:'
+          echo '      rule: "PathPrefix(`/auth`) || PathPrefix(`/questions`) || PathPrefix(`/submission`) || PathPrefix(`/assessment/start`) || PathPrefix(`/assessment/current`) || PathPrefix(`/assessment/attempt`) || PathPrefix(`/coding`) || PathPrefix(`/admin`)"'
+          echo '      entryPoints:'
+          echo '        - web'
+          echo '      service: app-backend'
+          echo '      priority: 5'
+          echo ''
+          echo '    challenge-routes:'
+          echo '      rule: "PathPrefix(`/challenge`)"'
+          echo '      entryPoints:'
+          echo '        - web'
+          echo '      service: challenge-svc'
+          echo '      middlewares:'
+          echo '        - challenge-stripprefix'
+          echo '      priority: 8'
+          echo ''
+          echo '    frontend-spa:'
+          echo '      rule: "PathPrefix(`/`)"'
+          echo '      entryPoints:'
+          echo '        - web'
+          echo '      service: frontend-spa'
+          echo '      priority: 1'
+        } > /etc/traefik/dynamic.yml
+
         exec traefik --configFile=/etc/traefik/traefik.yml
     environment:
+      # Application backend pool. APP1_URL is required; APP2_URL is added to
+      # the pool as soon as it is set in .env.
       APP1_URL: ${APP1_URL:-http://host.docker.internal:8002}
-      # Hands-On SQLi challenge server (Employee Portal). Published by App-1's
-      # compose on its host (APP1_CHALLENGE_PORT there, default 8080) and
-      # firewalled to this machine. LAN: http://<APP1_LAN_IP>:8080
-      # (NEVER the dashboard :8080 on THIS machine — that is Traefik's own.)
+      APP2_URL: ${APP2_URL:-}
+      # Hands-On SQLi challenge pool (Employee Portal). Published by each App
+      # machine on its own host (APPn_CHALLENGE_PORT there, default 8080) and
+      # firewalled to this machine. LAN: http://<APPn_LAN_IP>:8080
+      # (NEVER this machine's own :8080 — that is the Traefik dashboard.)
       APP1_CHALLENGE_URL: ${APP1_CHALLENGE_URL:-http://host.docker.internal:8080}
+      APP2_CHALLENGE_URL: ${APP2_CHALLENGE_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
+      # The only candidate-facing port (plus the dashboard below).
       - "${TRAEFIK_HTTP_PORT:-80}:80"
       - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
     volumes:
@@ -159,10 +209,19 @@ services:
       APP_VERSION: ${APP_VERSION:-0.3.0}
       SESSION_TIMEOUT_SECONDS: ${SESSION_TIMEOUT_SECONDS:-300}
       STALE_CHECK_INTERVAL_SECONDS: ${STALE_CHECK_INTERVAL_SECONDS:-60}
-      COMPILER_URL: ${COMPILER_URL:-http://host.docker.internal:8001} #http://compiler-1:8000
+      # ── Legacy single-node compiler ──
+      COMPILER_URL: ${COMPILER_URL:-http://host.docker.internal:8001}
       COMPILER_TIMEOUT: ${COMPILER_TIMEOUT:-60.0}
-      # ── System 3 (Judge0) ──
+      # ── Execution backend selector ──
       EXECUTION_BACKEND: ${EXECUTION_BACKEND:-judge0}
+      # ── Compiler pool (Compiler-1 / Compiler-2 / Compiler-3) ──
+      # /api/execute distributes submissions round-robin across these Judge0
+      # nodes and fails over when one is unreachable. Set every node that
+      # exists; leave all unset to keep using JUDGE0_URL alone.
+      COMPILER_1_URL: ${COMPILER_1_URL:-}
+      COMPILER_2_URL: ${COMPILER_2_URL:-}
+      COMPILER_3_URL: ${COMPILER_3_URL:-}
+      # Single-node address (used when no COMPILER_n_URL is set above).
       JUDGE0_URL: ${JUDGE0_URL:-http://judge0-server:2358}
       JUDGE0_TIMEOUT: ${JUDGE0_TIMEOUT:-60.0}
       JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
@@ -171,6 +230,9 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - gateway_net
+      # Shared Docker network for a compiler node running on THIS machine.
+      # Compiler nodes on their own machines are reached by LAN address
+      # (COMPILER_n_URL) instead — no shared Docker network can span hosts.
       - system3
     expose:
       - "8000"
@@ -182,17 +244,17 @@ services:
       retries: 3
       start_period: 15s
 
-# ── App 1 (External Service) ────────────────────────────────────────────────
-# App 1 runs on System 3 (separate physical machine).
-# Its address is configured via APP1_URL in .env.
-# For LAN deployment:  APP1_URL=http://<APP1_LAN_IP>:8002
-# For local testing:   APP1_URL=http://host.docker.internal:8002
+# ── Application machines ────────────────────────────────────────────────────
+# App-1 and App-2 run on their own physical machines (gateway/app-1/,
+# gateway/app-2/). This stack reaches them over the LAN at the APPn_URL /
+# APPn_CHALLENGE_URL addresses configured in .env. For same-machine testing use
+# http://host.docker.internal:<port>.
 
 # ── Shared networks ───────────────────────────────────────────────────────────
 networks:
   gateway_net:
     driver: bridge
-  # External network shared with the Judge0 System 3 stack.
+  # External network shared with a Judge0/compiler stack on THIS machine.
   # Create it once:  docker network create system3
   system3:
     external: true

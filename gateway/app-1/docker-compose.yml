@@ -51,7 +51,15 @@ services:
       HOST: "0.0.0.0"
       PORT: "8000"
 
-      # ── Judge0 (System 3 code execution) ──
+      # ── Compiler pool (Compiler-1 / Compiler-2 / Compiler-3) ──
+      # The backend distributes code submissions round-robin across these
+      # Judge0 nodes and fails over when one is unreachable. Use each compiler
+      # machine's LAN address, e.g. http://<COMPILER1_LAN_IP>:2358.
+      # Leave unset to use the single legacy JUDGE0_BASE_URL below.
+      COMPILER_1_URL: ${COMPILER_1_URL:-}
+      COMPILER_2_URL: ${COMPILER_2_URL:-}
+      COMPILER_3_URL: ${COMPILER_3_URL:-}
+      # Legacy single-node address (used only when no COMPILER_n_URL is set).
       JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-http://judge0-server:2358}
       JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
       JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
@@ -60,7 +68,11 @@ services:
     ports:
       # Host port 8002 → Container port 8000
       # For LAN: Gateway reaches App 1 at <APP1_LAN_IP>:8002
-      - "${APP1_HOST_PORT:-8002}:8000"
+      # Host port ${APP1_HOST_PORT:-8002} → container port 8000.
+      # The Gateway reaches App-1 at <APP1_LAN_IP>:${APP1_HOST_PORT:-8002}.
+      # Set APP1_API_BIND to this machine's LAN IP to stop it listening on any
+      # other interface as well (the DOCKER-USER guard is the real restriction).
+      - "${APP1_API_BIND:-0.0.0.0}:${APP1_HOST_PORT:-8002}:8000"
 
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" ]

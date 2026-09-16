@@ -1,0 +1,129 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# App 2 — Standalone Docker Compose   (SYSTEM 4)
+#
+# Clean replica of gateway/app-1/docker-compose.yml, deployed on its OWN
+# physical machine. Does NOT require the Gateway, Traefik, App-1 or Compiler
+# containers to be on this host.
+#
+# Two containers, publishing two host ports:
+#   app-2        host ${APP2_HOST_PORT:-8002} -> container 8000   (FastAPI API)
+#   challenge-2  host ${APP2_CHALLENGE_PORT:-8080} -> container 8080 (Hands-On)
+#
+# Both host ports are reachable by the GATEWAY machine only — that is what the
+# DOCKER-USER guard (gateway/scripts/docker-port-guard.sh) enforces. Candidates
+# must never reach them: their only entry point is
+# http://<GATEWAY_LAN_IP>/  (the Gateway routes /api/*, /challenge/* and the
+# website to the right machine).
+#
+# The port NUMBERS may be identical to App-1's (8002 / 8080): they live on a
+# different machine, so they cannot collide. Every value is configurable
+# (APP2_HOST_PORT / APP2_CHALLENGE_PORT) for hosts that need something else.
+#
+# Same Supabase project as App-1 — configured in THIS machine's .env, never by
+# copying App-1's .env. There is no separate recruitment database.
+#
+# Usage:
+#   cp .env.example .env          # fill in Supabase keys + the compiler pool
+#   docker compose up -d --build
+#   curl http://localhost:8002/          # {"status":"Healthy",...}
+#   curl http://localhost:8080/health    # challenge-2
+#   docker compose down
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  app-2:
+    build:
+      context: ../..
+      dockerfile: gateway/app-2/Dockerfile
+
+    container_name: app-2
+    restart: unless-stopped
+
+    environment:
+      # ── Supabase (REQUIRED – app will not start without these) ──
+      # The SAME project as App-1: both backends read and write one shared
+      # recruitment database. Never point this at a second project.
+      SUPABASE_URL: ${SUPABASE_URL:-https://your-project.supabase.co}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-your-service-role-key}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-your-anon-key-here}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-your-jwt-secret}
+
+      # ── CORS ──
+      # Through the Gateway every browser call is same-origin, so CORS is not
+      # involved in the LAN deployment.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:80,http://localhost:5173}
+
+      # ── Server ──
+      HOST: "0.0.0.0"
+      PORT: "8000"
+
+      # ── Compiler pool (Compiler-1 / Compiler-2 / Compiler-3) ──
+      # The app backend distributes code submissions round-robin across these
+      # nodes and fails over when one is unreachable. Values are the compiler
+      # machines' LAN addresses, e.g. http://<COMPILER1_LAN_IP>:2358.
+      # Leave unset to use the single legacy JUDGE0_BASE_URL below.
+      COMPILER_1_URL: ${COMPILER_1_URL:-}
+      COMPILER_2_URL: ${COMPILER_2_URL:-}
+      COMPILER_3_URL: ${COMPILER_3_URL:-}
+      # Legacy single-node address (used only when no COMPILER_n_URL is set).
+      JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-http://judge0-server:2358}
+      JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
+      JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
+
+    networks:
+      - system3
+
+    ports:
+      # Host port ${APP2_HOST_PORT:-8002} → container port 8000.
+      # Gateway reaches App-2 at <APP2_LAN_IP>:${APP2_HOST_PORT:-8002}.
+      # Set APP2_API_BIND to this machine's LAN IP to stop it listening on any
+      # other interface as well.
+      - "${APP2_API_BIND:-0.0.0.0}:${APP2_HOST_PORT:-8002}:8000"
+
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── SQLi challenge server (Hands-On "Employee Portal") ──────────────────────
+  # Identical challenge implementation + seeded database as challenge-1.
+  # Starts automatically with this stack; container binds 0.0.0.0:8080.
+  #
+  # Deliberately NO environment: no Supabase/platform credentials, no secrets,
+  # no Docker socket, no privileged mode, no host file mounts. The challenge
+  # uses only its own seeded SQLite database.
+  challenge-2:
+    build:
+      context: ../..
+      dockerfile: gateway/app-2/Dockerfile.challenge
+
+    container_name: challenge-2
+    restart: unless-stopped
+
+    networks:
+      - challenge_net
+
+    ports:
+      # Host ${APP2_CHALLENGE_PORT:-8080} → challenge container 8080.
+      # Gateway/Traefik target: APP2_CHALLENGE_URL=http://<APP2_LAN_IP>:8080
+      - "${APP2_CHALLENGE_BIND:-0.0.0.0}:${APP2_CHALLENGE_PORT:-8080}:8080"
+
+    expose:
+      - "8080"
+
+networks:
+  # External network shared with the Judge0/compiler stack. Only needed when a
+  # compiler node runs ON THIS HOST (it lets the app reach http://judge0-server:2358
+  # without a host port). Create it once per machine:
+  #   docker network create system3
+  system3:
+    external: true
+
+  # Internal-only network for this machine's challenge container. Nothing
+  # outside this compose project joins it; the only path to challenge-2 is the
+  # host port above → the Gateway's Traefik.
+  challenge_net:
+    driver: bridge

@@ -1,25 +1,43 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Judge0 – System 3 (independent code execution service)
+# Judge0 — the code-execution stack (Compiler-1 / Compiler-2 / Compiler-3)
 #
-# Self-hosted Judge0 CE (v1.13.1) using the official deployment architecture:
+# ONE definition, deployed once per execution machine. The same file boots
+# Compiler-1 (System 3), Compiler-2 (System 5) and Compiler-3 (System 6) —
+# each machine has its own copy of this repository, its own `.env` and its own
+# Docker engine, so nothing has to be duplicated or edited here.
+#
+# Self-hosted Judge0 CE (v1.13.1), upstream deployment architecture:
 #   judge0-server (Rails API) -> Redis queue -> judge0-worker (isolate sandboxes)
 #   PostgreSQL 16 (submission metadata), Redis 7.2 (queue)
 #
-# Independence:
-#   - Own Compose project, own network (external `system3`), own data volume.
-#   - Only the Judge0 HTTP API (port 2358) is exposed, bound to 127.0.0.1 for
-#     host-side testing. PostgreSQL and Redis expose NO host ports.
-#   - API is protected with an authentication token (see judge0.conf).
+# INDEPENDENCE (no conflicts between nodes)
+#   - COMPILER_NAME (default `judge0`) sets the Compose project name and every
+#     container name, so Compiler-1/2/3 can even share a host without clashing.
+#   - Data volumes are project-scoped (`<COMPILER_NAME>_judge0-db-data`) — each
+#     node keeps its own submission history.
+#   - COMPILER_NETWORK (default `system3`) is the node's private network. On a
+#     dedicated machine the default is fine; on a host running more than one
+#     node give each node its own network name (see DEPLOYMENT.md).
 #
-# Reachability:
-#   The gateway-api container joins the external `system3` network and talks to
-#   Judge0 at http://judge0-server:2358 — no host port needed for that path.
+# REACHABILITY (how App-1/App-2 and the Gateway call it)
+#   The API is published on the host as ${JUDGE0_BIND}:${JUDGE0_PORT} and is
+#   reached from the other machines at http://<COMPILERn_LAN_IP>:2358.
+#     JUDGE0_BIND  default 127.0.0.1 -> only this machine can reach it.
+#                  Set 0.0.0.0 on a dedicated execution machine, where the
+#                  firewall guard (scripts/docker-port-guard.sh) restricts it to
+#                  the Gateway / App machines. Candidate machines must never
+#                  reach it. PostgreSQL and Redis publish NO host ports.
+#   The gateway also joins the shared Docker network (`system3` by default) to
+#   keep the single-machine deployment working unchanged
+#   (JUDGE0_URL=http://judge0-server:2358).
 #
-# Create the shared network once:
-#   docker network create system3
+# Create the shared network once per machine:
+#   docker network create system3        (or the name in COMPILER_NETWORK)
 # Then:
 #   docker compose up -d
 # ══════════════════════════════════════════════════════════════════════════════
+
+name: ${COMPILER_NAME:-judge0}
 
 x-logging:
   &default-logging
@@ -33,20 +51,22 @@ services:
   # ── Judge0 API server ──────────────────────────────────────────────────────
   judge0-server:
     image: judge0/judge0:1.13.1
-    container_name: judge0-server
+    container_name: ${COMPILER_NAME:-judge0}-server
     restart: unless-stopped
     privileged: true
     volumes:
-      - ./judge0.conf:/judge0.conf:ro
+      - ${JUDGE0_CONF_PATH:-./judge0.conf}:/judge0.conf:ro
     ports:
-      # Host-local only: developer curl against the API (e.g. /languages).
-      # The gateway does NOT use this mapping — it uses the system3 network.
-      - "127.0.0.1:${JUDGE0_PORT:-2358}:2358"
+      # Host-local by default: developer curl against the API (e.g. /languages).
+      # On a dedicated execution machine set JUDGE0_BIND=0.0.0.0 so the Gateway
+      # and the App machines can reach it over the LAN, and restrict the port
+      # with the DOCKER-USER guard (candidates must never reach a compiler).
+      - "${JUDGE0_BIND:-127.0.0.1}:${JUDGE0_PORT:-2358}:2358"
     depends_on:
       - judge0-db
       - judge0-redis
     networks:
-      - system3
+      - judge0_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:2358/"]
       interval: 15s
@@ -62,17 +82,17 @@ services:
   # custom isolate build is needed.
   judge0-worker:
     image: judge0/judge0:1.13.1
-    container_name: judge0-worker
+    container_name: ${COMPILER_NAME:-judge0}-worker
     restart: unless-stopped
     command: ["./scripts/workers"]
     privileged: true
     volumes:
-      - ./judge0.conf:/judge0.conf:ro
+      - ${JUDGE0_CONF_PATH:-./judge0.conf}:/judge0.conf:ro
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - judge0-server
     networks:
-      - system3
+      - judge0_net
     healthcheck:
       test: ["CMD-SHELL", "ps -ef | grep -q '[r]esque'"]
       interval: 15s
@@ -84,13 +104,13 @@ services:
   # ── PostgreSQL (submission metadata) ──────────────────────────────────────
   judge0-db:
     image: postgres:16.2
-    container_name: judge0-db
+    container_name: ${COMPILER_NAME:-judge0}-db
     restart: unless-stopped
-    env_file: judge0.conf
+    env_file: ${JUDGE0_CONF_PATH:-./judge0.conf}
     volumes:
       - judge0-db-data:/var/lib/postgresql/data/
     networks:
-      - system3
+      - judge0_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U judge0 -d judge0"]
       interval: 15s
@@ -99,18 +119,51 @@ services:
       start_period: 15s
     <<: *default-logging
 
+  # ── One-shot Java tuning (lets a FRESH node work with plain `up -d`) ──────
+  # The OpenJDK image reserves ~1 GiB of *virtual* address space before doing
+  # anything, so under Judge0's rlimit-based enforcement (required on cgroup v2
+  # hosts, see judge0.conf) every Java submission dies at VM startup with
+  # "Could not allocate metaspace: 1073741824 bytes". Capping the language row
+  # (id 62) fixes it — this service applies that UPDATE automatically once per
+  # `docker compose up`, after the API has seeded the languages table, so a new
+  # Compiler-1/2/3 machine needs NO manual step. It is idempotent and exits 0.
+  # It runs on the node's own network, so PGHOST is the compose service name.
+  # `apply-java-tuning.sh` remains available to verify or to fix a running node.
+  judge0-java-tuning:
+    image: postgres:16.2
+    container_name: ${COMPILER_NAME:-judge0}-java-tuning
+    restart: "no"
+    depends_on:
+      judge0-server:
+        condition: service_healthy
+    env_file: ${JUDGE0_CONF_PATH:-./judge0.conf}
+    environment:
+      PGHOST: judge0-db
+      PGUSER: judge0
+      PGDATABASE: judge0
+    volumes:
+      # The script and the SQL live in the repository (single source of truth —
+      # apply-java-tuning.sh pipes the same .sql). Mounted, not inlined, so
+      # Compose never interpolates the shell's `$` expressions.
+      - ./java-tuning.sh:/java-tuning.sh:ro
+      - ./java-tuning.sql:/java-tuning.sql:ro
+    networks:
+      - judge0_net
+    entrypoint: ["/bin/sh", "/java-tuning.sh"]
+    <<: *default-logging
+
   # ── Redis (execution queue) ──────────────────────────────────────────────
   judge0-redis:
     image: redis:7.2.4
-    container_name: judge0-redis
+    container_name: ${COMPILER_NAME:-judge0}-redis
     restart: unless-stopped
     command:
       - "bash"
       - "-c"
       - 'docker-entrypoint.sh --appendonly no --requirepass "$$REDIS_PASSWORD"'
-    env_file: judge0.conf
+    env_file: ${JUDGE0_CONF_PATH:-./judge0.conf}
     networks:
-      - system3
+      - judge0_net
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 15s
@@ -123,7 +176,9 @@ volumes:
   judge0-db-data:
 
 networks:
-  # Pre-created external network shared with the gateway stack:
-  #   docker network create system3
-  system3:
+  # Shared external network. `system3` by default so the Gateway stack can keep
+  # reaching the co-located Judge0 by service name; give each node its own name
+  # (COMPILER_NETWORK) when several nodes run on one host.
+  judge0_net:
+    name: ${COMPILER_NETWORK:-system3}
     external: true

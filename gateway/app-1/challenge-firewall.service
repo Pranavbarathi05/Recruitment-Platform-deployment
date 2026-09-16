@@ -1,5 +1,6 @@
 [Unit]
 Description=Restrict Docker-published challenge/API ports to the Gateway IP (DOCKER-USER guard)
+Documentation=file:///opt/recruit/docker-port-guard.sh
 After=docker.service network-online.target
 Wants=docker.service
 PartOf=docker.service
@@ -7,9 +8,14 @@ PartOf=docker.service
 [Service]
 Type=oneshot
 # EDIT: set the Gateway machine's LAN IP (and --iface if auto-detect is wrong).
-# Add one --gateway-ip per gateway/app machine that must reach these ports.
-ExecStart=/opt/recruit/challenge-firewall.sh --gateway-ip CHANGE-ME-GATEWAY-LAN-IP
-ExecStop=/opt/recruit/challenge-firewall.sh --remove
+# Add one --gateway-ip per machine that must reach these ports.
+#
+# The guard script is shared by every system and now lives at
+# gateway/scripts/docker-port-guard.sh (installed to /opt/recruit/).
+# The generic unit for App-2 and the Compiler machines is
+# gateway/scripts/docker-port-guard.service.
+ExecStart=/opt/recruit/docker-port-guard.sh --gateway-ip CHANGE-ME-GATEWAY-LAN-IP
+ExecStop=/opt/recruit/docker-port-guard.sh --remove
 RemainAfterExit=yes
 
 [Install]

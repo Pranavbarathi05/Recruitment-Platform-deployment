@@ -24,8 +24,12 @@ GATEWAY machine                APP-01 machine              EXECUTION machine (Ju
 | App-01 | the application backend (dsc-recruit) | `gateway/app-1/` | `docker compose up -d --build` |
 | Execution | Judge0 (code execution) | `gateway/judge0/` | `docker compose up -d` |
 
-Not yet implemented: **App-02** and **Compiler-02/03**. Only the machines above exist in
-this repository.
+This three-machine layout is now the **six-machine** one: **App-02** (a second App
+replica) and **Compiler-02 / Compiler-03** (extra Judge0 nodes) are implemented, and the
+Gateway load-balances across all of them. **For the complete deployment — all six
+machines, the pools, the firewall and the test suite — follow the root
+[`DEPLOYMENT.md`](../DEPLOYMENT.md).** This file remains the detailed reference for the
+Gateway/App/Judge0 stacks themselves.
 
 ## Prerequisites (every machine)
 
@@ -36,10 +40,12 @@ this repository.
   on the machines that build images (Gateway and App-01). See the root `README.md`.
 - Every machine, once: `docker network create system3`
 
-> Judge0 must currently run **on the same machine as the Gateway stack** — the shared
-> `system3` Docker network does not span machines, and Judge0's API is bound to its own
-> machine's localhost. See ARCHITECTURE.md §11 for the manual changes needed to separate
-> them. App-01 can be anywhere on the LAN.
+> Judge0 no longer has to share a machine with the Gateway stack: each compiler machine
+> sets `JUDGE0_BIND=0.0.0.0` so the Gateway and the App machines reach it at
+> `http://<COMPILERn_LAN_IP>:2358`, and the DOCKER-USER guard restricts that port to
+> those machines alone. When a node *is* co-located, leave `JUDGE0_BIND` at `127.0.0.1`
+> and keep `JUDGE0_URL=http://judge0-server:2358` on the shared `system3` network.
+> The App machines use the `COMPILER_1_URL..COMPILER_3_URL` pool either way.
 
 ## Machine 1 — Gateway
 
@@ -156,16 +162,22 @@ machine is DNAT'ed in PREROUTING and forwarded straight through the FORWARD chai
 The only reliable restriction point is the `DOCKER-USER` chain, which Docker
 reserves for operator rules. Use the provided guard script:
 
-**App-01** (after `docker compose up -d`, as root):
+**App machines** (after `docker compose up -d`, as root):
 ```bash
-sudo cp gateway/app-1/challenge-firewall.sh /opt/recruit/
-sudo install -m 644 gateway/app-1/challenge-firewall.service \
-     /etc/systemd/system/challenge-firewall.service
-# Edit the unit: replace CHANGE-ME-GATEWAY-LAN-IP with the Gateway's LAN IP
-sudo systemctl daemon-reload && sudo systemctl enable --now challenge-firewall
-# One-shot without the unit:
-sudo ./gateway/app-1/challenge-firewall.sh --gateway-ip <GATEWAY_IP>
+sudo ./gateway/scripts/docker-port-guard.sh --ports "8002 8080" \
+     --gateway-ip <GATEWAY_LAN_IP>
+# Persist it: install gateway/scripts/docker-port-guard.service, edit the IPs and
+# ports inside it, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now docker-port-guard
 ```
+**Compiler machines** (Judge0 API reachable only from the Gateway and both App machines):
+```bash
+sudo ./gateway/scripts/docker-port-guard.sh --ports 2358 \
+     --gateway-ip <GATEWAY_LAN_IP> \
+     --gateway-ip <APP1_LAN_IP> --gateway-ip <APP2_LAN_IP>
+```
+(`gateway/app-1/challenge-firewall.sh` is kept as a compatibility shim that forwards
+to this script.)
 The guard restricts ports `8080,8002` (override with `--ports`) to the Gateway IP
 on the default-route interface, matching the **pre-DNAT host port** via conntrack
 (`--ctorigdstport`) — required because plain `--dport` rules see the *container*
@@ -179,8 +191,10 @@ keep LAN-restricted if enabled).
 **App-01:** `8002` (API) and `8080` (challenge-1) — Docker-published, restricted to
 the Gateway IP by the `DOCKER-USER` guard above. Candidates must never reach them
 directly; the only candidate-facing URL is `http://<GATEWAY_IP>/challenge/`.
-**Execution machine:** no inbound ports — the Gateway reaches Judge0 over the shared
-Docker network (same host), and its API port is bound to that machine's localhost only.
+**Compiler machines:** `2358` (Judge0 API) is published for the Gateway and the App
+machines and restricted to exactly those addresses by the guard above; PostgreSQL and
+Redis never publish a port. A co-located node can instead keep `JUDGE0_BIND=127.0.0.1`
+and be reached over the shared `system3` network by service name.
 
 ## Request flows (what to expect)
 
