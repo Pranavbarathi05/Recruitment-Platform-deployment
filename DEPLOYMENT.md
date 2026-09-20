@@ -24,7 +24,7 @@ all verified on a running deployment.
         │   /                      → frontend (React SPA)
         │   /api/*                 → gateway-api (sessions, health, execute)
         │   /auth/* /questions/* /submission/* /assessment/*         │
-        │   /coding/* /admin/*     → App pool   [App-1, App-2]
+        │   /_api/*                 → App pool   [App-1, App-2]  (all API calls)
         │   /challenge/*           → Challenge pool [challenge-1, challenge-2]
         └───────────────────────────────────────────────────────────┘
                     │                                  │
@@ -51,7 +51,7 @@ all verified on a running deployment.
 | Direction | Meaning |
 |---|---|
 | Gateway → Frontend | SPA is served by the `frontend` container behind Traefik |
-| Gateway → App-1/App-2 | `/auth`, `/questions`, `/submission`, `/assessment/*`, `/coding`, `/admin` load-balanced across both App machines |
+| Gateway → App-1/App-2 | `/_api/*` (all frontend API calls including `/admin`, `/auth`, etc.) load-balanced across both App machines |
 | Gateway → challenge-1/2 | `/challenge/*` load-balanced across both challenge containers |
 | App-1/App-2 → Supabase | The only Internet dependency of the App machines (one recruitment database) |
 | App-1/App-2 → Compiler-1/2/3 | `COMPILER_1_URL..3_URL`, round-robin with failover |
@@ -182,6 +182,34 @@ JUDGE0_AUTH_TOKEN=<same token>
 Each machine has its own copy of this repository. Run the commands **on that
 machine**.
 
+### Automated scripts (recommended)
+
+Each system has a startup and shutdown script in `gateway/scripts/`:
+
+| System | Startup | Shutdown |
+|--------|---------|----------|
+| 1 Gateway | `gateway/scripts/deploy-system1-gateway.sh` | `gateway/scripts/down-system1-gateway.sh` |
+| 2 App-1 | `gateway/scripts/deploy-system2-app1.sh` | `gateway/scripts/down-system2-app1.sh` |
+| 3 Compiler-1 | `gateway/scripts/deploy-system3-compiler1.sh` | `gateway/scripts/down-system3-compiler1.sh` |
+| 4 App-2 | `gateway/scripts/deploy-system4-app2.sh` | `gateway/scripts/down-system4-app2.sh` |
+| 5 Compiler-2 | `gateway/scripts/deploy-system5-compiler2.sh` | `gateway/scripts/down-system5-compiler2.sh` |
+| 6 Compiler-3 | `gateway/scripts/deploy-system6-compiler3.sh` | `gateway/scripts/down-system6-compiler3.sh` |
+
+Verify a system's role with:
+
+```bash
+gateway/scripts/check-system-role.sh gateway    # or app1, compiler1, etc.
+```
+
+Co-located test mode (NOT production):
+
+```bash
+./gateway/dockerdemoup.sh all      # starts all six systems on one machine
+./gateway/dockerdemodown.sh all    # stops all six
+```
+
+### Manual deployment
+
 ### SYSTEM 3, 5, 6 — the Compiler machines (do these first)
 
 Compiler-1/2/3 are the *same* stack deployed three times; only `.env` differs.
@@ -190,10 +218,10 @@ Compiler-1/2/3 are the *same* stack deployed three times; only `.env` differs.
 cd gateway/judge0
 cp .env.example .env
 #   COMPILER_NAME=compiler-1        (compiler-2 / compiler-3 on the other machines)
-#   COMPILER_NETWORK=compiler-1-net
+#   COMPILER_NETWORK=system3
 #   JUDGE0_BIND=0.0.0.0             (the Gateway and the App machines must reach it)
-#   JUDGE0_PORT=2358
-docker network create compiler-1-net      # the name you put in COMPILER_NETWORK
+#   JUDGE0_PORT=2358                (2359 for compiler-2, 2360 for compiler-3)
+docker network create system3
 docker compose up -d
 ```
 

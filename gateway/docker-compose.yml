@@ -108,6 +108,13 @@ services:
           echo '      stripPrefix:'
           echo '        prefixes:'
           echo '          - "/challenge"'
+          echo '    # Strip /_api prefix so the backend sees its native paths'
+          echo '    # (/, /admin/config, /auth/me, etc.).'
+          echo '    api-stripprefix:'
+          echo '      stripPrefix:'
+          echo '        prefixes:'
+          echo '          - "/_api"'
+
 
           echo '  routers:'
           echo '    gateway-api-file:'
@@ -117,11 +124,16 @@ services:
           echo '      service: gateway-api-svc'
           echo '      priority: 10'
           echo ''
-          echo '    app-backend-routes:'
-          echo '      rule: "PathPrefix(`/auth`) || PathPrefix(`/questions`) || PathPrefix(`/submission`) || PathPrefix(`/assessment/start`) || PathPrefix(`/assessment/current`) || PathPrefix(`/assessment/attempt`) || PathPrefix(`/coding`) || PathPrefix(`/admin`)"'
+          echo '    # All frontend API calls go through /_api (VITE_API_URL="/_api").'
+          echo '    # StripPrefix removes /_api so the backend sees /, /admin/config,'
+          echo '    # /auth/me, etc. — exactly the same paths as in DEV.'
+          echo '    api-backend-routes:'
+          echo '      rule: "PathPrefix(`/_api`)"'
           echo '      entryPoints:'
           echo '        - web'
           echo '      service: app-backend'
+          echo '      middlewares:'
+          echo '        - api-stripprefix'
           echo '      priority: 5'
           echo ''
           echo '    challenge-routes:'
@@ -183,7 +195,7 @@ services:
       args:
         VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:-}
         VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:-}
-        VITE_API_URL: "."
+        VITE_API_URL: "/_api"
     container_name: frontend
     restart: unless-stopped
     networks:
