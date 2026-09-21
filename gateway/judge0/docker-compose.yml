@@ -54,6 +54,7 @@ services:
     container_name: ${COMPILER_NAME:-judge0}-server
     restart: unless-stopped
     privileged: true
+    env_file: ${JUDGE0_CONF_PATH:-./judge0.conf}
     volumes:
       - ${JUDGE0_CONF_PATH:-./judge0.conf}:/judge0.conf:ro
     ports:
@@ -86,6 +87,7 @@ services:
     restart: unless-stopped
     command: ["./scripts/workers"]
     privileged: true
+    env_file: ${JUDGE0_CONF_PATH:-./judge0.conf}
     volumes:
       - ${JUDGE0_CONF_PATH:-./judge0.conf}:/judge0.conf:ro
       - /var/run/docker.sock:/var/run/docker.sock

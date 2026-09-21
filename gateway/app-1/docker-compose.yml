@@ -63,6 +63,7 @@ services:
       JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-http://judge0-server:2358}
       JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
       JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
+      JUDGE0_JAVA_MEMORY_LIMIT_KB: ${JUDGE0_JAVA_MEMORY_LIMIT_KB:-2097152}
     networks:
       - system3
     ports:
