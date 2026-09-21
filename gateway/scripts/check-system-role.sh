@@ -15,6 +15,15 @@ source "$SCRIPT_DIR/common.sh"
 
 ROLE="${1:?Usage: check-system-role.sh <gateway|app1|compiler1|app2|compiler2|compiler3>}"
 
+# The monitoring stack runs on EVERY physical system (see deploy-monitoring.sh),
+# so it is expected on every role rather than being another system's container.
+MONITORING=(
+    "monitoring-node-exporter"
+    "monitoring-cadvisor"
+    "monitoring-prometheus"
+    "monitoring-grafana"
+)
+
 case "$ROLE" in
     gateway)
         EXPECTED=("traefik" "frontend" "gateway-api")
@@ -65,7 +74,7 @@ errors=0
 # Check expected containers are present and healthy
 echo
 echo "Expected containers:"
-for container in "${EXPECTED[@]}"; do
+for container in "${EXPECTED[@]}" "${MONITORING[@]}"; do
     status=$(docker inspect --format='{{.State.Status}}' "$container" 2>/dev/null || echo "missing")
     health=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "none")
 

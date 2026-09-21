@@ -24,4 +24,9 @@ if [ -n "$remaining" ]; then
     exit 1
 fi
 
+# Monitoring is part of this machine's deployment; stop it last so the
+# watchful services outlive the workload they were measuring. No-op when it
+# is already down.
+"$SCRIPT_DIR/down-monitoring.sh" gateway
+
 log_ok "System 1 (Gateway) stopped."

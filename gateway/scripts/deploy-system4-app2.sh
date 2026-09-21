@@ -38,8 +38,8 @@ require_env SUPABASE_ANON_KEY || exit 1
 log_info "Checking port availability..."
 APP2_PORT="${APP2_HOST_PORT:-8002}"
 APP2_CHALLENGE_PORT="${APP2_CHALLENGE_PORT:-8080}"
-check_port_available "$APP2_PORT" || exit 1
-check_port_available "$APP2_CHALLENGE_PORT" || exit 1
+check_port_owned_or_free "$APP2_PORT" app-2 || exit 1
+check_port_owned_or_free "$APP2_CHALLENGE_PORT" app-2 || exit 1
 
 # ── Create external network if needed ───────────────────────────────────────
 docker network create system3 2>/dev/null || true
@@ -71,8 +71,13 @@ else
     exit 1
 fi
 
+# ── Monitoring (part of this system's lifecycle) ─────────────────────────────
+"$SCRIPT_DIR/deploy-monitoring.sh" app2
+
 # ── Final status ────────────────────────────────────────────────────────────
-print_status "SYSTEM 4 — App-2" app-2 challenge-2
+print_status "SYSTEM 4 — App-2" \
+    app-2 challenge-2 \
+    monitoring-node-exporter monitoring-cadvisor monitoring-prometheus monitoring-grafana
 
 echo
 log_ok "System 4 (App-2) is running."

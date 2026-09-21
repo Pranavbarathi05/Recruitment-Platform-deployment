@@ -38,18 +38,65 @@ wait_healthy() {
     return 1
 }
 
+# Wait for a container to be running. Unlike wait_healthy() this also accepts
+# containers that declare no HEALTHCHECK (their health is reported as
+# "none"), which is how upstream monitoring images behave.
+wait_up() {
+    local container="$1"
+    local timeout="${2:-120}"
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        local status
+        status=$(docker inspect --format='{{.State.Status}}' "$container" 2>/dev/null || echo "missing")
+        if [ "$status" = "running" ]; then
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    log_error "Container '$container' did not start within ${timeout}s"
+    return 1
+}
+
 # Check if a port is already in use by an unrelated process
 check_port_available() {
     local port="$1"
-    if ss -ltnp | grep -q ":${port} "; then
+    if ss -ltn | grep -q ":${port} "; then
         local pid
-        pid=$(ss -ltnp | grep ":${port} " | head -1 | sed 's/.*pid=\([0-9]*\).*/\1/')
+        pid=$(ss -ltnp 2>/dev/null | grep ":${port} " | head -1 | sed 's/.*pid=\([0-9]*\).*/\1/')
         local proc_name
-        proc_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
-        log_error "Port $port is already in use by PID $pid ($proc_name)"
+        proc_name=$(ps -p "${pid:-0}" -o comm= 2>/dev/null || echo "unknown")
+        log_error "Port $port is already in use by PID ${pid:-?} ($proc_name)"
         return 1
     fi
     return 0
+}
+
+# A port is acceptable when it is free, OR when it is already published by the
+# Compose project we are about to (re)start. Re-running a deploy script must be
+# a no-op rather than "port already allocated" — see dockerdemoup.sh.
+#   check_port_owned_or_free <port> <compose-project>
+check_port_owned_or_free() {
+    local port="$1"
+    local project="${2:-}"
+
+    if ! ss -ltn | grep -q ":${port} "; then
+        return 0
+    fi
+
+    if [ -n "$project" ]; then
+        local owned
+        owned=$(docker ps \
+            --filter "label=com.docker.compose.project=${project}" \
+            --format '{{.Ports}}' 2>/dev/null \
+            | grep -c "[.:]${port}->" || true)
+        if [ "${owned:-0}" -gt 0 ]; then
+            log_info "Port $port is already published by project '$project' — reusing it"
+            return 0
+        fi
+    fi
+
+    check_port_available "$port"
 }
 
 # Validate that a required env var is set

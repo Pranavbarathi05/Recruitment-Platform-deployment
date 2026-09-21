@@ -70,7 +70,13 @@ services:
       JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-http://judge0-server:2358}
       JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
       JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
+      # Address space the backend asks Judge0 for when running Java. Must stay
+      # <= MAX_MEMORY_LIMIT in the compiler node's judge0.conf (2097152 KB); the
+      # backend's own default is 8 GB, which Judge0 rejects with HTTP 422.
+      JUDGE0_JAVA_MEMORY_LIMIT_KB: ${JUDGE0_JAVA_MEMORY_LIMIT_KB:-2097152}
 
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - system3
 

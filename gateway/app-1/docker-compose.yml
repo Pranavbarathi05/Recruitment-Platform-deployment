@@ -64,6 +64,8 @@ services:
       JUDGE0_AUTH_TOKEN: ${JUDGE0_AUTH_TOKEN:-}
       JUDGE0_AUTH_HEADER: ${JUDGE0_AUTH_HEADER:-X-Judge0-Token}
       JUDGE0_JAVA_MEMORY_LIMIT_KB: ${JUDGE0_JAVA_MEMORY_LIMIT_KB:-2097152}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - system3
     ports:

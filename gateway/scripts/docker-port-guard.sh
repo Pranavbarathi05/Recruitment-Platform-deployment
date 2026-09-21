@@ -29,13 +29,15 @@
 #   - Idempotent; safe to re-run. --remove undoes everything.
 #
 # USAGE (run as root ON THE MACHINE THAT PUBLISHES THE PORTS, after Docker)
-#   # App machine — challenge + API reachable only from the Gateway:
+#   # App machine — challenge-1/2 + app-1/2 API reachable only from the Gateway:
 #   sudo ./docker-port-guard.sh --gateway-ip <GATEWAY_LAN_IP>
 #
-#   # Compiler machine — Judge0 API reachable only from Gateway + App machines:
+#   # Compiler-1 — Judge0 API reachable only from Gateway + App machines:
 #   sudo ./docker-port-guard.sh --ports 2358 \
 #        --gateway-ip <GATEWAY_LAN_IP> \
 #        --gateway-ip <APP1_LAN_IP> --gateway-ip <APP2_LAN_IP>
+#
+#   # Compiler-2 / Compiler-3 — same, with --ports 2359 / 2360 respectively.
 #
 #   # Undo:
 #   sudo ./docker-port-guard.sh --remove
@@ -49,7 +51,10 @@ set -euo pipefail
 
 GATEWAY_IPS=()
 GATEWAY_IP6S=()
-PORTS="8080 8002"
+# App machines publish BOTH nodes' ports (app-1/app-2 API + challenge-1/challenge-2),
+# so the default covers the whole App role. Compiler machines pass --ports 2358
+# (compiler-2: 2359, compiler-3: 2360) explicitly — see the usage block above.
+PORTS="8002 8003 8080 8081"
 IFACE=""
 REMOVE=0
 COMMENT="port-guard"

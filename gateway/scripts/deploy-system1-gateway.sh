@@ -45,7 +45,7 @@ done
 
 # ── Check ports ─────────────────────────────────────────────────────────────
 log_info "Checking port availability..."
-check_port_available "${TRAEFIK_HTTP_PORT:-80}" || exit 1
+check_port_owned_or_free "${TRAEFIK_HTTP_PORT:-80}" gateway || exit 1
 
 # ── Create external network if needed ───────────────────────────────────────
 docker network create system3 2>/dev/null || true
@@ -72,11 +72,19 @@ else
     exit 1
 fi
 
-# Gateway API health
-if curl -sf "http://localhost:${TRAEFIK_HTTP_PORT:-80}/_api/api/health" > /dev/null 2>&1; then
+# Gateway API health (gateway-api serves /api/health; /_api is the APP backend)
+if curl -sf "http://localhost:${TRAEFIK_HTTP_PORT:-80}/api/health" > /dev/null 2>&1; then
     log_ok "Gateway API health OK"
 else
-    log_warn "Gateway API health check failed (may need auth)"
+    log_error "Gateway API health check failed at /api/health"
+    exit 1
+fi
+
+# App backend pool root (the App machines' health endpoint)
+if curl -sf "http://localhost:${TRAEFIK_HTTP_PORT:-80}/_api/" > /dev/null 2>&1; then
+    log_ok "App backend pool reachable at /_api/"
+else
+    log_warn "App backend pool not reachable at /_api/ (is an App machine up?)"
 fi
 
 # ── Verify remote systems ──────────────────────────────────────────────────
@@ -89,6 +97,10 @@ check_remote() {
         log_warn "$name URL not configured — skipping"
         return 0
     fi
+    # This probe runs on the HOST, but the .env addresses are what the Traefik
+    # CONTAINER uses. host.docker.internal only resolves inside a container, so
+    # rewrite it for the host-side check (single-host simulation mode only).
+    url="${url//host.docker.internal/localhost}"
     if curl -sf --connect-timeout 5 "$url" > /dev/null 2>&1; then
         log_ok "$name reachable at $url"
     else
@@ -102,11 +114,18 @@ check_remote "Compiler-1" "${COMPILER_1_URL:-}"
 check_remote "Compiler-2" "${COMPILER_2_URL:-}"
 check_remote "Compiler-3" "${COMPILER_3_URL:-}"
 
+# ── Monitoring (part of this system's lifecycle) ─────────────────────────────
+"$SCRIPT_DIR/deploy-monitoring.sh" gateway
+
 # ── Final status ────────────────────────────────────────────────────────────
-print_status "SYSTEM 1 — Gateway" traefik frontend gateway-api
+print_status "SYSTEM 1 — Gateway" \
+    traefik frontend gateway-api \
+    monitoring-node-exporter monitoring-cadvisor monitoring-prometheus monitoring-grafana
 
 echo
 log_ok "System 1 (Gateway) is running."
 echo "  Frontend:     http://localhost:${TRAEFIK_HTTP_PORT:-80}/"
 echo "  Dashboard:    http://localhost:${TRAEFIK_DASHBOARD_PORT:-8080}/"
-echo "  API health:   curl http://localhost:${TRAEFIK_HTTP_PORT:-80}/_api/api/health"
+echo "  App API:      curl http://localhost:${TRAEFIK_HTTP_PORT:-80}/_api/          (App backend, /_api prefix stripped)"
+echo "  Gateway API:  curl http://localhost:${TRAEFIK_HTTP_PORT:-80}/api/health   (gateway-api)"
+echo "  Monitoring:   Grafana on the configured MONITOR_PORT (default 3001)"

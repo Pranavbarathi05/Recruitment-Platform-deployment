@@ -26,6 +26,9 @@ Systems:
   compiler3   System 6 — Judge0 compiler-3 (port 2360)
   all         ALL systems (co-located test/development only — NOT production!)
 
+The monitoring stack (project 'monitoring') is started by every system script
+and is idempotent: `all` starts it exactly once, never twice.
+
 Production deployment: use the individual scripts in scripts/ directory.
 Each script starts only the containers belonging to that physical machine.
 EOF
@@ -61,6 +64,11 @@ case "$SYSTEM" in
         echo " ALL SYSTEMS STARTED (co-located test mode)"
         echo "═══════════════════════════════════════════════════════════════════"
         docker ps
+        echo
+        echo "Compose projects owned by this deployment:"
+        docker compose ls -a 2>/dev/null \
+            | grep -E '^(NAME|gateway|app-1|app-2|compiler-1|compiler-2|compiler-3|monitoring)' \
+            || true
         ;;
     *)
         echo "Unknown system: $SYSTEM"

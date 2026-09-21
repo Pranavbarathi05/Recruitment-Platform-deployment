@@ -34,14 +34,22 @@ fi
 # then pass -p to docker compose for explicit project targeting.
 export COMPILER_NAME="$TARGET_COMPILER"
 export JUDGE0_PORT="$HOST_PORT"
-log_info "Using project name: $COMPILER_NAME, host port: $JUDGE0_PORT"
+# Each node gets its OWN Docker network. judge0.conf addresses its datastores
+# by the plain upstream service names (judge0-db / judge0-redis) and the
+# mounted /judge0.conf OVERRIDES the container environment, so the only way to
+# keep several nodes on one host unambiguous is to give every node a private
+# network in which those names exist exactly once. Without this, a submission
+# is INSERTed into one node's Postgres and polled from another, which Judge0
+# answers with "Couldn't find Submission" (HTTP 404) until the poll times out.
+export COMPILER_NETWORK="${TARGET_COMPILER}-net"
+log_info "Using project name: $COMPILER_NAME, host port: $JUDGE0_PORT, network: $COMPILER_NETWORK"
 
 # ── Check ports ─────────────────────────────────────────────────────────────
 log_info "Checking port availability..."
-check_port_available "$HOST_PORT" || exit 1
+check_port_owned_or_free "$HOST_PORT" "$TARGET_COMPILER" || exit 1
 
-# ── Create external network if needed ───────────────────────────────────────
-docker network create system3 2>/dev/null || true
+# ── Create this node's private network if needed ─────────────────────────────
+docker network create "$COMPILER_NETWORK" 2>/dev/null || true
 
 # ── Start compiler stack ────────────────────────────────────────────────────
 log_info "Starting ${COMPILER_NAME} stack..."

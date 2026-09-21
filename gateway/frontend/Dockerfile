@@ -16,13 +16,22 @@ WORKDIR /app
 # Copy frontend source from the application repository
 COPY dsc-recruit/apps/frontend/package.json ./
 COPY dsc-recruit/apps/frontend/package-lock.json ./
-COPY dsc-recruit/apps/frontend/scripts/copy-pyodide.mjs ./scripts/copy-pyodide.mjs
+
+# package.json's `postinstall` runs BOTH `copy-pyodide` and `copy-duckdb`, so
+# every scripts/*.mjs that hook needs must already be on disk when `npm ci`
+# runs. Copying the whole scripts/ tree would also drag in the ~8 MB of wheel
+# files, which change rarely — copy just the Node scripts here and let the
+# later `COPY ... ./` bring in scripts/pyodide-packages/*.whl.
+COPY dsc-recruit/apps/frontend/scripts/*.mjs ./scripts/
 
 RUN npm ci
 
 COPY dsc-recruit/apps/frontend/ ./
 
-RUN npm run copy-pyodide
+# Regenerate the local WASM runtimes from the packages just installed
+# (Pyodide runtime + stdlib + wheels, DuckDB-WASM + workers). `prebuild`
+# re-runs both, but doing it explicitly here keeps the failure obvious.
+RUN npm run copy-pyodide && npm run copy-duckdb
 
 # Vite reads VITE_* env vars at build time
 ARG VITE_SUPABASE_URL

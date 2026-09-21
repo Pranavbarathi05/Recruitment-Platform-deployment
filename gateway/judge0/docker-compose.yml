@@ -55,6 +55,23 @@ services:
     restart: unless-stopped
     privileged: true
     env_file: ${JUDGE0_CONF_PATH:-./judge0.conf}
+    environment:
+      # Pin the datastores to THIS node's own containers.
+      #
+      # judge0.conf ships the plain service names (`judge0-db`, `judge0-redis`)
+      # because upstream assumes one Judge0 stack per host. When several nodes
+      # share one Docker network (the co-located Compiler-1/2/3 test host) every
+      # stack registers those same DNS aliases, so `judge0-db` resolves
+      # round-robin across all of them: a submission would be INSERTed into one
+      # node's Postgres and then polled from another, which the API answers with
+      # "Couldn't find Submission" (HTTP 404) until the poll times out.
+      #
+      # `environment:` overrides `env_file:`, so each node always talks to its
+      # own <COMPILER_NAME>-db / <COMPILER_NAME>-redis. On a dedicated machine
+      # (COMPILER_NAME=compiler-1) these names are identical to the service
+      # names, so nothing changes there.
+      POSTGRES_HOST: ${COMPILER_NAME:-judge0}-db
+      REDIS_HOST: ${COMPILER_NAME:-judge0}-redis
     volumes:
       - ${JUDGE0_CONF_PATH:-./judge0.conf}:/judge0.conf:ro
     ports:
@@ -88,6 +105,11 @@ services:
     command: ["./scripts/workers"]
     privileged: true
     env_file: ${JUDGE0_CONF_PATH:-./judge0.conf}
+    environment:
+      # Same pinning as judge0-server: the worker must read the queue and write
+      # results for THIS node only (see the note above).
+      POSTGRES_HOST: ${COMPILER_NAME:-judge0}-db
+      REDIS_HOST: ${COMPILER_NAME:-judge0}-redis
     volumes:
       - ${JUDGE0_CONF_PATH:-./judge0.conf}:/judge0.conf:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -140,7 +162,8 @@ services:
         condition: service_healthy
     env_file: ${JUDGE0_CONF_PATH:-./judge0.conf}
     environment:
-      PGHOST: judge0-db
+      # This node's own database, for the same reason as judge0-server above.
+      PGHOST: ${COMPILER_NAME:-judge0}-db
       PGUSER: judge0
       PGDATABASE: judge0
     volumes:

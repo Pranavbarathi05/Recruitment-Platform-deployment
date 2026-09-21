@@ -24,7 +24,12 @@ Systems:
   app2        System 4 — App-2 backend, challenge-2
   compiler2   System 5 — Judge0 compiler-2 (port 2359)
   compiler3   System 6 — Judge0 compiler-3 (port 2360)
-  all         ALL systems
+  all         ALL systems (includes the monitoring stack)
+
+The monitoring stack (project 'monitoring') belongs to the deployment
+lifecycle: every system script stops it, and `all` verifies that NOTHING from
+this deployment is left behind. Named volumes are kept; pass no flags to this
+script if you want Prometheus/Grafana history preserved.
 EOF
     exit 1
 }
@@ -41,13 +46,37 @@ case "$SYSTEM" in
     compiler3)  exec "$SCRIPTS/down-system6-compiler3.sh" ;;
     all)
         echo "Stopping all systems..."
+        # Every one of these also stops the monitoring stack on its machine; the
+        # first call removes it, the rest are no-ops.
         "$SCRIPTS/down-system1-gateway.sh"  || true
         "$SCRIPTS/down-system2-app1.sh"     || true
         "$SCRIPTS/down-system4-app2.sh"     || true
         "$SCRIPTS/down-system3-compiler1.sh" || true
         "$SCRIPTS/down-system5-compiler2.sh" || true
         "$SCRIPTS/down-system6-compiler3.sh" || true
-        echo "All systems stopped."
+
+        # ── Nothing-left-behind check ──────────────────────────────────────
+        # Every Compose project this deployment owns, including monitoring.
+        PROJECTS=(gateway app-1 app-2 compiler-1 compiler-2 compiler-3 monitoring)
+        leftovers=""
+        for project in "${PROJECTS[@]}"; do
+            names=$(docker ps -a \
+                --filter "label=com.docker.compose.project=${project}" \
+                --format '{{.Names}}' 2>/dev/null)
+            if [ -n "$names" ]; then
+                leftovers="${leftovers}${names}
+"
+            fi
+        done
+
+        echo
+        if [ -n "$leftovers" ]; then
+            echo "ERROR: deployment containers still present after shutdown:"
+            echo "$leftovers"
+            exit 1
+        fi
+
+        echo "All systems stopped. No deployment containers remain."
         ;;
     *)
         echo "Unknown system: $SYSTEM"

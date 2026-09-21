@@ -12,6 +12,16 @@ __pycache__/
 .pytest_cache/
 venv/
 .venv/
+**/.venv/
+
+# Application build artifacts (the Dockerfile builds these inside the image).
+# Excluding them keeps the build context ~small instead of shipping the local
+# node_modules/.venv/dist trees into every docker build.
+dsc-recruit/apps/frontend/node_modules/
+dsc-recruit/apps/frontend/dist/
+dsc-recruit/apps/backend/.venv/
+dsc-recruit/apps/backend/**/__pycache__/
+dsc-recruit/.venv/
 
 # Environment files (secrets) — never copy these into a build context
 **/.env
