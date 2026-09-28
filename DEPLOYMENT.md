@@ -21,11 +21,11 @@ all verified on a running deployment.
                                   ▼
         ┌───────────────────────────────────────────────────────────┐
         │ SYSTEM 1 — GATEWAY            Traefik :80 (+ dashboard :8080)
-        │   /                      → frontend (React SPA)
-        │   /api/*                 → gateway-api (sessions, health, execute)
-        │   /auth/* /questions/* /submission/* /assessment/*         │
-        │   /_api/*                 → App pool   [App-1, App-2]  (all API calls)
-        │   /challenge/*           → Challenge pool [challenge-1, challenge-2]
+        │   /            → frontend (React SPA, includes client-side routes)
+        │   /api/*       → gateway-api (sessions, health, /api/execute)
+        │   /_api/*      → App pool [App-1, App-2] (StripPrefix — ALL frontend
+        │                  API calls: /auth, /assessment, /coding, /admin, …)
+        │   /challenge/* → Challenge pool [challenge-1, challenge-2] (StripPrefix)
         └───────────────────────────────────────────────────────────┘
                     │                                  │
         ┌───────────┴───────────┐          ┌───────────┴────────────┐
@@ -41,7 +41,8 @@ all verified on a running deployment.
              SYSTEM 3        SYSTEM 5        SYSTEM 6
              Compiler-1      Compiler-2      Compiler-3
              Judge0 :2358    Judge0 :2358    Judge0 :2358
-             (server+worker+redis+postgres — all internal except :2358)
+             (server+worker+redis+postgres — all internal except the API port;
+              2359/2360 when the nodes share one host)
 
         App-1 / App-2 ─────────────► Supabase (one shared project, Internet)
 ```
@@ -212,22 +213,37 @@ Co-located test mode (NOT production):
 
 ### SYSTEM 3, 5, 6 — the Compiler machines (do these first)
 
-Compiler-1/2/3 are the *same* stack deployed three times; only `.env` differs.
+Compiler-1/2/3 are the *same* stack deployed three times; only the identity/port
+`.env` values differ. The scripts do this for you (they also create the node's
+private Docker network and wait for health):
+
+```bash
+./gateway/scripts/deploy-system3-compiler1.sh   # compiler-1 on 2358
+./gateway/scripts/deploy-system5-compiler2.sh   # compiler-2 on 2359
+./gateway/scripts/deploy-system6-compiler3.sh   # compiler-3 on 2360
+```
+
+Manual equivalent:
 
 ```bash
 cd gateway/judge0
 cp .env.example .env
 #   COMPILER_NAME=compiler-1        (compiler-2 / compiler-3 on the other machines)
-#   COMPILER_NETWORK=system3
+#   COMPILER_NETWORK=compiler-1-net  (one PRIVATE network per node — never shared)
 #   JUDGE0_BIND=0.0.0.0             (the Gateway and the App machines must reach it)
 #   JUDGE0_PORT=2358                (2359 for compiler-2, 2360 for compiler-3)
-docker network create system3
-docker compose up -d
+docker network create compiler-1-net
+docker compose -p compiler-1 up -d   # -p keeps the nodes' volumes separate
 ```
 
-That is all: `judge0-server`, `judge0-worker`, `judge0-redis`, `judge0-db` and a
-one-shot `compiler-1-java-tuning` container, which **tunes Java automatically**
-and exits 0 (see §10).
+Each node is isolated in its **own** Docker network (`<name>-net`): `judge0.conf`
+addresses the datastores by the plain service names `judge0-db` / `judge0-redis`,
+so a shared network would make one node's submission get inserted into another
+node's Postgres (Judge0 then answers `Couldn't find Submission` / HTTP 404).
+
+That is all: `compiler-1-server`, `compiler-1-worker`, `compiler-1-redis`,
+`compiler-1-db` and a one-shot `compiler-1-java-tuning` container, which
+**tunes Java automatically** and exits 0 (see §10).
 
 Verify:
 
@@ -407,7 +423,7 @@ docker compose down -v         # DESTRUCTIVE: wipes compiler metadata + java tun
 |---|---|
 | `http://<GATEWAY_LAN_IP>/` | ✅ the website |
 | `http://<GATEWAY_LAN_IP>/challenge/` | ✅ the Employee Portal (same-origin iframe) |
-| `http://<GATEWAY_LAN_IP>/api/*`, `/auth/*`, `/questions/*`, … | ✅ through Traefik |
+| `http://<GATEWAY_LAN_IP>/api/*`, `/_api/*`, `/auth/*`, `/questions/*`, … | ✅ through Traefik (`/auth/*` and friends are client-side SPA routes; their API calls go via `/_api/*`) |
 | `http://<APP1_LAN_IP>:8002` / `:8080` | ❌ blocked by the DOCKER-USER guard |
 | `http://<APP2_LAN_IP>:8002` / `:8080` | ❌ blocked by the DOCKER-USER guard |
 | `http://<COMPILERN_LAN_IP>:2358` | ❌ blocked by the DOCKER-USER guard |

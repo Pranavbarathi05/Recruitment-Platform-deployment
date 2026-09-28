@@ -18,14 +18,24 @@ Browser ──> Traefik ──> Gateway API ──> judge0-server ──> Redis 
 | `judge0-db`    | `postgres:16.2`        | Submission metadata (NOT exposed)          |
 | `judge0-redis` | `redis:7.2.4`          | Execution queue (NOT exposed)              |
 
-- Only the Judge0 API is reachable: `127.0.0.1:2358` (host-local, developer
-  curl) and `http://judge0-server:2358` on the shared `system3` Docker network
-  (used by the gateway — no host port involved).
+- The API is published on the host as `${JUDGE0_BIND}:${JUDGE0_PORT}`
+  (compose default `127.0.0.1:2358` — machine-local curl only). Compiler
+  machines in the LAN deployment set `JUDGE0_BIND=0.0.0.0` so the Gateway and
+  the App machines reach `http://<COMPILERn_LAN_IP>:<JUDGE0_PORT>` through the
+  `COMPILER_1_URL..3_URL` pool; the DOCKER-USER guard restricts that port to
+  those machines (root `DEPLOYMENT.md` §6). A node co-located with the Gateway
+  can instead keep the loopback bind and be addressed as
+  `http://judge0-server:2358` over the shared `system3` Docker network.
+- **One node per network.** Several nodes on one host each get a private
+  network (`compiler-1-net`, `compiler-2-net`, `compiler-3-net`, created by
+  `gateway/scripts/deploy-compiler.sh`) because `judge0.conf` addresses the
+  datastores by the plain names `judge0-db` / `judge0-redis` — sharing a
+  network would cross-wire one node's Postgres with another's submissions.
 - PostgreSQL / Redis expose **no** host ports. Judge0 is **not** routed through
   Traefik; candidates can never call it directly.
 - The API requires `X-Judge0-Token: <AUTHN_TOKEN>` (token lives in
-  `judge0.conf`; the gateway sends the same token via `JUDGE0_AUTH_TOKEN` in
-  `gateway/.env`).
+  `judge0.conf`; the Gateway and the App machines send the same token via
+  `JUDGE0_AUTH_TOKEN` in their `.env` files).
 - Worker concurrency: `COUNT=4` resque workers (verified live inside the
   container); queue depth `MAX_QUEUE_SIZE=100` (`judge0.conf`).
 - Judge0 CE v1.13.1 in this image **does include SQL (SQLite 3.27.2)**, id 82
@@ -69,13 +79,23 @@ Judge0 CE 1.13.1 (ids 15/16 exist only in newer releases); an allocation
 failure under the rlimit surfaces as a runtime error, which the gateway maps
 honestly instead of pretending it is an MLE.
 
-### Java (one-time database tuning)
+### Java (automatic per-node tuning)
 
 The OpenJDK 13 runtime reserves ~1 GiB of *virtual* address space for the
 compressed class space even with a small heap, so it needs
 `MAX_MEMORY_LIMIT >= 2 GiB` (set to `2097152` in `judge0.conf`) **and** an
-explicitly capped JVM. After `docker compose up -d`, run once (survives
-restarts; only `down -v` wipes it):
+explicitly capped JVM. The one-shot `judge0-java-tuning` service applies the
+caps automatically on **every** `docker compose up` — a brand-new node needs no
+manual step, and only `docker compose down -v` (which wipes the node's database
+volume) requires the next `up` to redo it. To check or repair a running node:
+
+```bash
+./gateway/judge0/apply-java-tuning.sh compiler-1 --verify
+./gateway/judge0/apply-java-tuning.sh compiler-1
+```
+
+Both paths run the same SQL (`gateway/judge0/java-tuning.sql`), so they cannot
+drift apart. The tuning sets the capped compile/run commands for language id 62:
 
 ```sql
 -- inside judge0-db:  psql -U judge0 -d judge0
@@ -90,20 +110,33 @@ the JVM's address-space *ceiling*.
 
 ## Prerequisites
 
-The gateway joins the same external network, so create it once:
+Create the node's Docker network once (the deploy scripts do this for you):
 
 ```bash
-docker network create system3
+docker network create compiler-1-net   # or system3 for a co-located single node
 ```
 
 ## Start / stop
 
+Recommended — via the per-system scripts (create the network, set identity,
+wait for health):
+
 ```bash
-docker compose up -d            # start (from gateway/judge0)
-docker compose ps               # status
-docker compose logs -f          # logs
-docker compose down             # stop (keeps data volume)
-docker compose down -v          # stop AND wipe submission metadata + Java tuning
+./gateway/scripts/deploy-system3-compiler1.sh    # compiler-1 on 2358
+./gateway/scripts/deploy-system5-compiler2.sh    # compiler-2 on 2359
+./gateway/scripts/deploy-system6-compiler3.sh    # compiler-3 on 2360
+./gateway/scripts/down-compiler.sh compiler-1    # stop one node
+```
+
+Manual (from `gateway/judge0`, with `COMPILER_NAME`/`COMPILER_NETWORK`/
+`JUDGE0_BIND`/`JUDGE0_PORT` set in `.env`):
+
+```bash
+docker compose -p compiler-1 up -d    # -p keeps the nodes' volumes separate
+docker compose -p compiler-1 ps       # status (server/worker/db/redis/java-tuning)
+docker compose -p compiler-1 logs -f  # logs
+docker compose -p compiler-1 down     # stop (keeps data volume)
+docker compose -p compiler-1 down -v  # stop AND wipe submission metadata + Java tuning
 ```
 
 ## Test the API directly (from the host)

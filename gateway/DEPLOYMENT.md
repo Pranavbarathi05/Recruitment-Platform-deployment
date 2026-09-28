@@ -34,11 +34,13 @@ Gateway/App/Judge0 stacks themselves.
 ## Prerequisites (every machine)
 
 - Docker Engine 20.10+ and the Compose plugin (v2.20+): `docker --version && docker compose version`
-- Ports: Gateway frees **80** (and 8080 if you want the dashboard); App-01 frees **8002**;
-  execution machine: nothing extra (Judge0's port stays local to that machine).
+- Ports: Gateway frees **80** (and 8080 if you want the dashboard); App machines free
+  **8002** (API) and **8080** (challenge); compiler machines free **2358** (2359/2360
+  when nodes share a host). Judge0's Postgres/Redis publish nothing.
 - The application repository cloned **inside** the deployment repository as `dsc-recruit/`
-  on the machines that build images (Gateway and App-01). See the root `README.md`.
-- Every machine, once: `docker network create system3`
+  on the machines that build images (Gateway and App machines). See the root `README.md`.
+- Gateway and App machines, once each: `docker network create system3`
+  (compiler nodes instead get a private network from `scripts/deploy-compiler.sh`)
 
 > Judge0 no longer has to share a machine with the Gateway stack: each compiler machine
 > sets `JUDGE0_BIND=0.0.0.0` so the Gateway and the App machines reach it at
@@ -61,9 +63,18 @@ Edit `.env`:
 ```bash
 APP1_URL=http://<APP1_LAN_IP>:8002      # App-01's LAN IP, port 8002
 APP1_CHALLENGE_URL=http://<APP1_LAN_IP>:8080  # same host, challenge port
-JUDGE0_AUTH_TOKEN=<same as AUTHN_TOKEN in judge0/judge0.conf>
+APP2_URL=http://<APP2_LAN_IP>:8002      # App-2 (leave empty until it exists)
+APP2_CHALLENGE_URL=http://<APP2_LAN_IP>:8080
+COMPILER_1_URL=http://<COMPILER1_LAN_IP>:2358   # Judge0 nodes: LAN IP + port
+COMPILER_2_URL=http://<COMPILER2_LAN_IP>:2359   # (2358/2359/2360)
+COMPILER_3_URL=http://<COMPILER3_LAN_IP>:2360
+JUDGE0_AUTH_TOKEN=<same as AUTHN_TOKEN in every judge0/judge0.conf>
 # TRAEFIK_HTTP_PORT=80                  # change only if port 80 is taken
 ```
+
+(The single-host simulation reuses the same keys with `host.docker.internal`
+addresses and per-node ports 2358/2359/2360 — see the repository-root
+`DEPLOYMENT.md`.)
 
 ### Start and verify
 
@@ -199,10 +210,11 @@ and be reached over the shared `system3` network by service name.
 ## Request flows (what to expect)
 
 **Application flow:** `browser → GET /login → traefik → frontend` (website pages)
-**Login flow:** `browser → POST /auth/login → traefik → APP1_URL (app-1) → Supabase → back`
-**Execution flow:** `browser → POST /api/execute → traefik → gateway-api → Judge0 → back`
+**Login flow:** `browser → POST /_api/auth/login → traefik (strip /_api) → app pool (APP1_URL/APP2_URL) → Supabase → back`
+**Candidate execution flow:** `browser → POST /_api/coding/attempt/{id}/run|submit → traefik → app backend → compiler pool (COMPILER_1..3_URL) → Judge0 → back`
+**Operator/smoke execution flow:** `curl → POST /api/execute → traefik → gateway-api → compiler pool → Judge0 → back`
 **Challenge flow:** `browser → GET|POST /challenge/* → traefik (StripPrefix /challenge)
-→ APP1_CHALLENGE_URL (challenge-1 on App-01) → back`
+→ challenge pool (APP1/2_CHALLENGE_URL) → back`
 The Hands-On iframe loads `/challenge/` same-origin on the Gateway; Traefik's own
 dashboard stays on port 8080 of the **Gateway** machine (different machine/port
 namespace from App-01's challenge port — do not confuse them).
@@ -271,21 +283,25 @@ Identical regardless of execution backend.
 
 | Variable | Default | Description |
 |---|---|---|
-| `APP1_URL` | `http://host.docker.internal:8002` | App-01 base URL |
+| `APP1_URL` / `APP2_URL` | `http://host.docker.internal:8002` / empty | app-backend pool; empty = machine out of the pool |
+| `APP1_CHALLENGE_URL` / `APP2_CHALLENGE_URL` | `http://host.docker.internal:8080` / empty | challenge pool (`/challenge/*`) |
 | `TRAEFIK_HTTP_PORT` | `80` | front-door HTTP port |
 | `TRAEFIK_DASHBOARD_PORT` | `8080` | Traefik dashboard (dev) |
-| `APP_ENV` / `APP_VERSION` | `development` / — | shown by /api/info |
+| `APP_ENV` / `APP_VERSION` | `development` / `0.3.0` | shown by /api/info |
 | `SESSION_TIMEOUT_SECONDS` | `300` | idle seconds before a session goes inactive |
 | `STALE_CHECK_INTERVAL_SECONDS` | `60` | stale-checker wake-up interval |
-| `EXECUTION_BACKEND` | `judge0` | `judge0` or `compiler1` (legacy) |
-| `JUDGE0_URL` | `http://judge0-server:2358` | Judge0 API (system3 network) |
+| `EXECUTION_BACKEND` | `judge0` | `judge0` (Compiler-1/2/3) or `compiler1` (legacy) |
+| `COMPILER_1_URL` `COMPILER_2_URL` `COMPILER_3_URL` | empty | Judge0 nodes for `/api/execute` (round-robin + failover) |
+| `JUDGE0_URL` | `http://judge0-server:2358` | single-node fallback (co-located node, `system3` network) |
 | `JUDGE0_TIMEOUT` | `60.0` | Judge0 request timeout (s) |
-| `JUDGE0_AUTH_TOKEN` | — | must equal `AUTHN_TOKEN` in judge0.conf |
+| `JUDGE0_AUTH_TOKEN` | — | must equal `AUTHN_TOKEN` in every `judge0.conf` |
 | `JUDGE0_AUTH_HEADER` | `X-Judge0-Token` | header Judge0 checks |
 | `COMPILER_URL` | `http://host.docker.internal:8001` | legacy Compiler-1 (only for EXECUTION_BACKEND=compiler1) |
 | `COMPILER_TIMEOUT` | `60.0` | Compiler-1 timeout (s) |
+| `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | — | public Supabase credentials passed as frontend build args (the SPA makes no direct Supabase calls) |
 
-App-01 variables: see `app-1/.env.example`. Judge0 variables: see `judge0/judge0.conf.example`.
+App-1/App-2 variables: see `app-1/.env.example` / `app-2/.env.example`.
+Compiler-node variables: see `judge0/.env.example` + `judge0/judge0.conf.example`.
 
 ## Stopping and updating
 
@@ -302,7 +318,7 @@ cd ../gateway/app-1 && docker compose up -d --build   # App-01 machine (after ba
 
 ## Troubleshooting
 
-**502 from /auth/*, /questions/*, /coding/* (App-01 unreachable)**
+**502 from /_api/auth/*, /_api/questions/*, /_api/coding/* (app pool member unreachable)**
 ```bash
 docker ps | grep app-1                 # on the App-01 machine
 curl http://<APP1_IP>:8002/            # from the Gateway machine — is it reachable?
@@ -321,7 +337,8 @@ docker compose logs gateway-api | tail
 **Connection refused between machines**
 ```bash
 nc -zv <APP1_IP> 8002                  # from the Gateway — firewall test
-sudo ufw allow from <GATEWAY_IP> to any port 8002 proto tcp   # on App-01
+# ufw/INPUT does NOT filter Docker-published ports — use the DOCKER-USER guard:
+sudo ./gateway/scripts/docker-port-guard.sh --ports "8002 8080" --gateway-ip <GATEWAY_IP>
 ```
 
 **Container keeps stopping**
@@ -330,22 +347,26 @@ docker compose logs <service> --tail 50
 ```
 
 **SQL note:** with Judge0, SQL runs in SQLite (Judge0 language id 82). The legacy
-compiler-1 also sandboxes SQL to SQLite.
-
-## Known limitations
+compiler-1 also sandboxes SQL to SQLite.## Known limitations
 
 1. **No TLS.** Plain HTTP on the LAN; acceptable for the recruitment scenario.
-2. **Judge0 co-located with the Gateway.** Judge0's API is localhost-bound and the
-   `system3` network is host-local; separating them needs the manual changes in
-   ARCHITECTURE.md §11.
-3. **No authentication on the legacy Compiler-1 API.** Off by default; fine on a trusted
-   LAN. Judge0, the default, is token-protected.
-4. **Single execution backend instance.** No Compiler-02/03 yet.
-5. **Supabase requires Internet** on the App-01 machine (keys + network reachable).
-6. **App-02** is not implemented.
+2. **Compiler nodes are reached by address, not by shared Docker networking.**
+   Each Judge0 node publishes `${JUDGE0_BIND}:${JUDGE0_PORT}` and the apps/Gateway
+   reach it at `http://<COMPILERn_LAN_IP>:<port>` (`COMPILER_1..3_URL`),
+   firewalled by the DOCKER-USER guard. A co-located node can keep
+   `JUDGE0_BIND=127.0.0.1` and be addressed as `http://judge0-server:2358` over
+   the `system3` network instead.
+3. **No authentication on the legacy Compiler-1 API.** Off by default; fine on a
+   trusted LAN. Judge0, the default, is token-protected.
+4. **Supabase requires Internet** on every App machine (keys + network reachable).
+5. **The demo stack (`docker-compose.local.yml`) is not the production routing**
+   and has no Hands-On `/challenge/` route — use it only for local demos.
+6. **Single shared Supabase project.** App-1 and App-2 must use the same
+   `SUPABASE_URL`; never create a second recruitment database.
 
 ---
 
 *This document describes the repository as it is. Older versions described a two-backend
-load-balancing demo (`backend-1`/`backend-2`) and a `System 2` compiler host — those
-descriptions are obsolete.*
+load-balancing demo (`backend-1`/`backend-2`) and a three-machine-only layout with
+"App-02/Compiler-02/03 not implemented" — those descriptions are obsolete: all six
+systems exist (see the repository-root `DEPLOYMENT.md`).*

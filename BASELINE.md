@@ -45,17 +45,22 @@ Reachability classes:
 
 ---
 
-## 2. Routing baseline (Traefik file provider)
+## 2. Routing baseline (Traefik file provider, rendered from `gateway/.env` at start)
 
-| Path | Target | Priority |
+| Priority | Path | Target |
 |---|---|---|
-| `/api/*` | `gateway-api` | 10 |
-| `/auth/*`, `/questions/*`, `/submission/*`, `/assessment/*`, `/coding/*`, `/admin/*` | App pool `[APP1_URL, APP2_URL]` | 5 |
-| `/challenge/*` (`/challenge` too) | Challenge pool `[APP1_CHALLENGE_URL, APP2_CHALLENGE_URL]` + `StripPrefix /challenge` | 8 |
-| `/*` | `frontend` | 1 |
+| 10 | `/api/*` | `gateway-api` |
+| 8 | `/challenge`, `/challenge/*` | Challenge pool `[APP1_CHALLENGE_URL, APP2_CHALLENGE_URL]` + `StripPrefix /challenge` |
+| 5 | `/_api/*` | App pool `[APP1_URL, APP2_URL]` + `StripPrefix /_api` (all frontend API calls) |
+| 1 | `/*` | `frontend` (SPA) |
 
-Candidate-visible URLs are always Gateway-relative (`/`, `/api/*`, `/challenge/`).
-No internal address is ever sent to a browser.
+The frontend is built with `VITE_API_URL="/_api"`, so every API call the SPA
+makes is same-origin and reaches the backend with its native path (`/_api/auth/login`
+→ `/auth/login`). The single-host demo stack (`docker-compose.local.yml`) still uses
+older direct-prefix rules (`/auth/*`, `/questions/*`, …) and `VITE_API_URL="."`.
+
+Candidate-visible URLs are always Gateway-relative (`/`, `/_api/*`, `/api/*`,
+`/challenge/`). No internal address is ever sent to a browser.
 
 ---
 
@@ -92,36 +97,39 @@ machine that is not configured is simply absent from the list.
 
 ## 5. Test baseline
 
+Re-verified 2026-09-28 (documentation audit; stack not required for the unit suites):
+
 | Suite | Result |
 |---|---|
-| `deployment-tests/system1-gateway-test.sh` | PASS |
-| `deployment-tests/system2-app1-test.sh` | PASS |
-| `deployment-tests/system3-compiler1-test.sh` | PASS |
-| `deployment-tests/system4-app2-test.sh` | PASS |
-| `deployment-tests/system5-compiler2-test.sh` | PASS |
-| `deployment-tests/system6-compiler3-test.sh` | PASS |
-| `deployment-tests/full-lan-test.sh` | PASS |
+| `deployment-tests/system1-gateway-test.sh` … `system6-compiler3-test.sh` | PASS (at baseline time; needs a running stack) |
+| `deployment-tests/full-lan-test.sh` | PASS (at baseline time; needs a running stack) |
 | `deployment-tests/firewall-kernel-test.sh` | PASS (13 passed, 0 failed) |
-| Frontend (vitest) | 93/93 pass |
+| Frontend (vitest, `apps/frontend`) | **331/337 pass** — 6 pre-existing failures (below) |
 | Frontend build | succeeds |
-| Frontend lint | my files: 0 errors (6 pre-existing warnings). Repo-wide: 4 pre-existing errors in `cpp-runner.worker.js` and `Instructions.test.jsx` |
-| Backend (pytest) | 365 passed, **9 pre-existing failures** (`TestCompilerServiceIntegration`) |
-| Gateway integration (`gateway/tests/test_phase3.py`) | 26 passed, **6 pre-existing failures** — proven pre-existing by re-running them against the previous (single-node) code |
+| Backend (pytest, `apps/backend`) | **846 passed** across `test_main.py`, `test_assessment_planner.py`, `test_assessment_planning.py`, `test_module_config_admin.py`, `utils/` |
+| Network monitor agent (`apps/network-monitor-agent`) | **23 passed** |
+| Gateway helper API (`gateway/gateway-api/tests`) | **49 passed** |
+| Legacy runner (`gateway/compiler-1/tests`) | **37 passed** |
+| Gateway live tests (`gateway/tests/test_phase3.py`, …) | need a running stack — see `gateway/README.md` → Tests |
 
-### Pre-existing failures (not caused by this work, not "fixed" to go green)
+### Pre-existing frontend failures (unchanged files, not caused by recent work)
 
-1. **`test_c_accepted`** — the test sends malformed C: `\n` inside a non-raw
-   Python string becomes a real newline, so `printf("hello` is unterminated
-   (`missing terminating " character`).
-2. **`test_java_accepted`** — Judge0 compiles `Main.java`; the test declares
-   `public class Solution`. Identical on every node.
-3. **`test_sql_accepted`, `test_sql_wrong_answer`, `test_sql_syntax_error`,
-   `test_sql_multiple_queries`** — SQL expectations do not match the SQLite
-   language configuration.
-4. **`test_hostile_infinite_loop`** — Judge0's wall clock exceeds the test's
-   10 s assertion.
-5. **`TestCompilerServiceIntegration`** (backend, 9 tests) — mocks of the old
-   single-compiler gateway contract; the platform now uses Judge0.
+1. **`AdminModules.test.jsx` — 4 failures.** Query ambiguity in the module-config
+   form tests (role/name queries matching more than one element after the
+   network-integrity and tier controls were added).
+2. **`AdminPanel.test.jsx` — 2 failures.** `getByRole('button', {name:'Save'})`
+   matches multiple buttons in the remark dialog after the same control additions.
+
+These are test-selector issues in files this work did not touch; they are recorded
+rather than "fixed" to keep the baseline honest.
+
+### Historical note
+
+An earlier recording of this baseline read "Backend 365 passed, 9 pre-existing
+failures (`TestCompilerServiceIntegration`)" and "gateway integration 26 passed,
+6 pre-existing failures". `TestCompilerServiceIntegration` still exists but was
+updated to the Judge0 contract and passes with the rest of the suite; the suites
+above are the current state.
 
 ---
 

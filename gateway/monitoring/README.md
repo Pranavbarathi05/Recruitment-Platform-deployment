@@ -5,7 +5,7 @@ watches **infrastructure** (host + containers) only — no application code is
 modified and no custom application metrics are invented.
 
 ```
- System 1 / System 2 / System 3 (Docker containers + one host)
+ Six co-located stacks (single-host simulation) — or one stack per physical machine
         │                        │
         │ node-exporter         │ cAdvisor
         │ (host CPU/RAM/disk)   │ (per-container CPU/RAM/net, incl. Judge0)
@@ -61,24 +61,26 @@ auto-provisioned — no manual setup.
   RX/TX, top-15 container CPU share, top-15 container memory, containers-up count.
 
 Judge0 and platform containers appear automatically via cAdvisor
-(`judge0-server`, `judge0-worker`, `judge0-db`, `judge0-redis`,
-`traefik`, `frontend`, `gateway-api`, `app-1`). No Judge0-internal queue
+(`compiler-N-server`, `compiler-N-worker`, `traefik`, `frontend`,
+`gateway-api`, `app-1`, `app-2`, `challenge-*`). No Judge0-internal queue
 metrics exist without adding a metrics endpoint to Judge0 itself; container
 resource usage is the visibility provided here.
 
-## Current local simulation vs. real multi-machine
+## Single-host simulation vs. real multi-machine
 
-**Now** — one physical host runs the whole simulation: the `node` job covers
-that host; `cadvisor` covers every container on it (System 1, App 1/compiler-1,
-Judge0, monitoring). Labels are therefore the *compose project / container
-name*, not physical machine identities.
+**Now (single-host simulation)** — one physical host runs the whole simulation:
+the `node` job covers that host; `cadvisor` covers every container on it
+(Gateway, App-1/App-2, the three compiler nodes, monitoring). Labels are
+therefore the *compose project / container name*, not physical machine
+identities. Every `deploy-systemN-*.sh` script starts the monitoring stack as
+part of that machine's lifecycle (idempotent).
 
-**Later** — when System 2 and System 3 become separate physical machines:
+**Multi-machine LAN** — on each physical machine:
 
-1. On each machine install node-exporter (and cAdvisor if it hosts Docker),
-   e.g. as systemd units or a tiny compose file, bound to the LAN interface.
-2. Record the LAN addresses in `.env` (`SYSTEM1_EXPORTER` / `SYSTEM2_EXPORTER` /
-   `SYSTEM3_EXPORTER`, see `.env.example`).
+1. Install node-exporter (and cAdvisor if it hosts Docker), e.g. as systemd
+   units or a tiny compose file, bound to the LAN interface.
+2. Record the LAN addresses in `.env` (`SYSTEM1_EXPORTER` /
+   `SYSTEM2_EXPORTER` / `SYSTEM3_EXPORTER`, see `.env.example`).
 3. Add them to `prometheus/systems.yml` (file_sd, re-read every 60 s) with
    `system`/`role` labels — see the template in that file. No restart of
    Prometheus is required.

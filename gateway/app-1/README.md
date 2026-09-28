@@ -18,6 +18,12 @@ App-01 machine
 │  8000 inside the container       │
 │  → published on host port 8002   │
 │  → talks to Supabase (Internet)  │
+│                                  │
+│  challenge-1 container           │
+│  SQL-injection Hands-On server   │
+│  → published on host port 8080   │
+│  → isolated (own SQLite seed,    │
+│    no credentials, no Internet)  │
 └──────────────────────────────────┘
 ```
 
@@ -62,7 +68,14 @@ docker compose down
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | — | Supabase service role key |
 | `SUPABASE_JWT_SECRET` | Yes | — | Supabase JWT secret |
 | `CORS_ORIGINS` | No | `http://localhost:80,http://localhost:5173` | Allowed CORS origins |
-| `APP1_HOST_PORT` | No | `8002` | Host-side port |
+| `APP1_HOST_PORT` | No | `8002` | Host-side API port |
+| `APP1_CHALLENGE_PORT` | No | `8080` | Host-side challenge port |
+| `APP1_API_BIND` | No | `0.0.0.0` | Interface the API port binds to |
+| `COMPILER_1_URL` / `COMPILER_2_URL` / `COMPILER_3_URL` | No | empty | Judge0 pool for coding Run/Submit (round-robin + failover) |
+| `JUDGE0_BASE_URL` | No | `http://judge0-server:2358` | single-node fallback when the pool is empty |
+| `JUDGE0_AUTH_TOKEN` | No | empty | must equal `AUTHN_TOKEN` in every node's `judge0.conf` |
+| `JUDGE0_AUTH_HEADER` | No | `X-Judge0-Token` | header Judge0 checks |
+| `JUDGE0_JAVA_MEMORY_LIMIT_KB` | No | `2097152` | address-space floor for Java submissions |
 
 Never commit the real `.env` — only `.env.example` is in Git.
 
@@ -77,19 +90,25 @@ Never commit the real `.env` — only `.env.example` is in Git.
 browser → Gateway (traefik :80) → APP1_URL → this machine :8002 → app-1 container
 ```
 
-The Gateway routes `/auth/*`, `/questions/*`, `/submission/*`, `/assessment/*`
-(start/current/attempt), `/coding/*`, and `/admin/*` to App-01; everything else goes to
-the website container. App-01 is reached **only** on port 8002.
+The Gateway routes the `/_api/*` prefix (stripped) to the App pool — which serves
+every backend route (`/auth/*`, `/assessment/*`, `/coding/*`, `/admin/*`,
+`/questions/*`, `/submission/*`, …) — and `/challenge/*` (stripped) to the
+challenge pool. App-1 is reached **only** on ports 8002 (API) and 8080
+(challenge-1).
 
 ### Firewall
 
-If using `ufw`, restrict port 8002 to the Gateway machine:
+Docker-published ports are **not** filtered by UFW/INPUT rules (they are DNAT'ed
+in PREROUTING and forwarded through the FORWARD chain). Restrict ports 8002 and
+8080 to the Gateway machine with the provided DOCKER-USER guard instead:
 
 ```bash
-sudo ufw allow from <GATEWAY_IP> to any port 8002 proto tcp
+sudo ../scripts/docker-port-guard.sh --ports "8002 8080" --gateway-ip <GATEWAY_IP>
+sudo iptables -S DOCKER-USER      # verify
 ```
 
-Only port 8002 needs to be open. No other ports are required.
+Persist it with `../scripts/docker-port-guard.service` (see the root
+`DEPLOYMENT.md` §6). No other ports need to be open.
 
 ## Health check
 
@@ -123,15 +142,17 @@ Docker healthcheck polls this every 15 seconds.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/` | No | Health check |
-| GET | `/questions/domains` | No | List active domains |
-| POST | `/auth/login`, `/auth/signup`, `/auth/me`, … | — | Authentication (proxied to Supabase Auth) |
-| POST | `/submission/` | Yes | Submit code |
-| POST | `/assessment/start` | Yes | Start assessment |
-| GET/POST | `/coding/*` | Yes | Coding assessment flow |
-| GET | `/admin/domains` | Yes (admin) | List all domains |
+| GET | `/questions/domains`, `/questions/domains/{id}` | No | Catalogue of active domains |
+| GET/POST | `/auth/*` (`csrf`, `signup`, `login`, `logout`, `me`, `assessment-access`) | — | Cookie-based authentication (Supabase Auth) |
+| GET/POST | `/assessment/*` (`available-domains`, `start`, `current`, `attempt/…`) | Yes (candidate) | Assessment lifecycle |
+| GET/POST | `/coding/attempt/{id}/*` (`problems`, `draft`, `run`, `submit`) | Yes (candidate) | Coding section |
+| GET/POST/PUT/DELETE | `/admin/*` | Yes (admin) | Domains, MCQs, config, results, remarks, resets |
+| * | `/admin/coding/*`, `/admin/descriptive-questions/*`, `/admin/hands-on-questions/*`, `/admin/assessment/modules/*` | Yes (admin) | Content authoring |
+| POST | `/submission/` | Yes | Legacy submission endpoint (still mounted) |
 
-Most endpoints require Supabase authentication. The health check and domain listing work
-without credentials.
+Full endpoint reference: [`../../docs/API.md`](../../docs/API.md). Most endpoints
+require the `dsc_session` cookie; admin endpoints additionally require
+`profiles.is_admin`. The health check and domain catalogue work without credentials.
 
 ## Testing
 

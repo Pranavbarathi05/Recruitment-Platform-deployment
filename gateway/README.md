@@ -8,11 +8,13 @@ The Gateway is the machine candidates talk to. It runs three containers:
 | `frontend` | built from `frontend/Dockerfile` | serves the website (React SPA built from `dsc-recruit/apps/frontend`) |
 | `gateway-api` | built from `gateway-api/Dockerfile` | FastAPI helper: health/info, session tracking, code-execution proxy |
 
-The application backend (**App-01**, from `dsc-recruit/apps/backend`) is **not** part of
-this stack — it is a separate deployment (`app-1/`), found via `APP1_URL`. Code execution
-is proxied to the active execution backend (Judge0 by default, legacy Compiler-1 via
-`EXECUTION_BACKEND=compiler1`). See `DEPLOYMENT.md` for the multi-machine LAN setup and
-`../README.md` for the beginner guide.
+The application backend (**App-1 / App-2**, built from `dsc-recruit/apps/backend`) is
+**not** part of this stack — they are separate deployments (`app-1/`, `app-2/`),
+found via `APP1_URL` / `APP2_URL` in the app pool. Code execution is proxied to the
+active execution backend (Judge0 compiler pool by default, legacy Compiler-1 via
+`EXECUTION_BACKEND=compiler1`). See `DEPLOYMENT.md` for the multi-machine LAN setup,
+`../DEPLOYMENT.md` for the six-system runbook and `../README.md` for the beginner
+guide.
 
 > Historical note: earlier phases of this project used dummy `backend-1`/`backend-2`
 > services and a `test-backend/` folder to verify load balancing. Those are gone; the
@@ -41,39 +43,54 @@ docker network create system3     # once per machine
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `APP1_URL` | `http://host.docker.internal:8002` | App-01 address. LAN deployment: `http://<APP1_LAN_IP>:8002` |
+| `APP1_URL` / `APP2_URL` | `http://host.docker.internal:8002` / empty | app-backend pool members. LAN deployment: `http://<APPn_LAN_IP>:8002`. Empty = out of the pool |
+| `APP1_CHALLENGE_URL` / `APP2_CHALLENGE_URL` | `http://host.docker.internal:8080` / empty | Hands-On challenge pool members (`http://<APPn_LAN_IP>:8080`) |
 | `TRAEFIK_HTTP_PORT` | `80` | front-door port published on the host |
-| `TRAEFIK_DASHBOARD_PORT` | `8080` | Traefik dashboard port (dev convenience) |
+| `TRAEFIK_DASHBOARD_PORT` | `8080` | Traefik dashboard port (dev convenience — **not** the challenge) |
 | `APP_ENV` | `development` | shown by `/api/info` |
-| `APP_VERSION` | — | shown by `/api/info` |
+| `APP_VERSION` | `0.3.0` | shown by `/api/info` |
 | `SESSION_TIMEOUT_SECONDS` | `300` | idle seconds before a session is marked inactive |
 | `STALE_CHECK_INTERVAL_SECONDS` | `60` | how often the background checker runs |
-| `EXECUTION_BACKEND` | `judge0` | `judge0` (System 3) or `compiler1` (legacy) |
-| `JUDGE0_URL` | `http://judge0-server:2358` | Judge0 API (via the `system3` Docker network) |
-| `JUDGE0_AUTH_TOKEN` | — | must equal `AUTHN_TOKEN` in `judge0/judge0.conf` |
+| `EXECUTION_BACKEND` | `judge0` | `judge0` (Compiler-1/2/3) or `compiler1` (legacy) |
+| `COMPILER_1_URL` `COMPILER_2_URL` `COMPILER_3_URL` | empty | Judge0 nodes for `/api/execute` — round-robin + failover; all empty = use `JUDGE0_URL` |
+| `JUDGE0_URL` | `http://judge0-server:2358` | single-node fallback (co-located node on the `system3` network) |
+| `JUDGE0_AUTH_TOKEN` | — | must equal `AUTHN_TOKEN` in every node's `judge0/judge0.conf` |
+| `JUDGE0_AUTH_HEADER` | `X-Judge0-Token` | header Judge0 checks |
 | `JUDGE0_TIMEOUT` | `60.0` | Judge0 request timeout (seconds) |
 | `COMPILER_URL` | `http://host.docker.internal:8001` | legacy Compiler-1 address (only if `EXECUTION_BACKEND=compiler1`) |
 | `COMPILER_TIMEOUT` | `60.0` | Compiler-1 request timeout (seconds) |
+| `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | — | public Supabase credentials passed as **build args**; the SPA currently makes no direct Supabase calls (all data goes through the backend) |
 
-The frontend build receives `VITE_API_URL="."` — the website always calls the Gateway
-itself (same origin). It never talks to Supabase directly.
+The frontend build receives `VITE_API_URL="/_api"` — the website calls the Gateway at
+the same origin under the `/_api` prefix, which Traefik strips before forwarding to
+the app pool. It never talks to Supabase directly.
 
 ## Routing (Traefik)
 
-Traefik's routing table is generated at container start (inline in
-`docker-compose.yml`); static settings live in `traefik/traefik.yml`. Highest priority wins:
+Traefik's routing table is **rendered at container start** by the entrypoint in
+`docker-compose.yml` (into `/etc/traefik/dynamic.yml`); static settings live in
+`traefik/traefik.yml`. Highest priority wins:
 
 | Priority | Path | Destination |
 |---|---|---|
 | 10 | `/api/*` | `gateway-api` (internal :8000) |
-| 5 | `/auth/*`, `/questions/*`, `/submission/*`, `/assessment/start`, `/assessment/current`, `/assessment/attempt/*`, `/coding/*`, `/admin/*` | App-01 (`APP1_URL`) |
+| 8 | `/challenge`, `/challenge/*` | challenge pool `[APP1_CHALLENGE_URL, APP2_CHALLENGE_URL]`, `StripPrefix /challenge` |
+| 5 | `/_api/*` | app pool `[APP1_URL, APP2_URL]`, `StripPrefix /_api` |
 | 1 | everything else | `frontend` (internal :8080) |
 
-The `/auth`, `/assessment`, `/coding`, `/admin`, `/submission`, `/questions` prefixes are
-the application backend's routers; the frontend is a single-page app and uses these same
-paths for its API calls.
+The app pool serves every backend route (`/auth/*`, `/assessment/*`, `/coding/*`,
+`/admin/*`, `/questions/*`, `/submission/*`, …) because the `/_api` prefix is
+removed before the request reaches the backend. Both pools are health-checked
+(`/` for apps, `/health` for challenges, every 10 s) and unhealthy members are
+taken out of rotation; an empty pool degrades to a single closed port (502 on
+that route) rather than breaking the whole site.
 
-Traefik dashboard (dev only): http://localhost:8080 — HTTP → Routers shows the live table.
+The single-host demo stack (`docker-compose.local.yml`) still uses the older
+direct-prefix rules and builds the frontend with `VITE_API_URL="."` — see that
+file's header comment.
+
+Traefik dashboard (dev only): http://localhost:8080 — HTTP → Routers shows the live
+table (or open it via the `traefik.localhost` host rule).
 
 ## Gateway API endpoints
 
@@ -132,11 +149,9 @@ code execution uses the bundled compiler-1.
 hostname -I | awk '{print $1}'    # the machine's LAN IP, e.g. 192.168.1.42
 ```
 
-Open the firewall for the front door (Ubuntu example):
-
-```bash
-sudo ufw allow 80/tcp
-```
+Published ports are reachable by default — Docker inserts its own iptables rules
+and UFW/INPUT rules do not apply to them (see `DEPLOYMENT.md` → Firewall). Only a
+upstream firewall/switch policy would need an explicit allow for port 80.
 
 Then from any LAN machine: `curl http://<LAN-IP>/api/health` and open
 `http://<LAN-IP>/` in a browser.
@@ -155,7 +170,7 @@ pytest -v
 
 Same pattern for `gateway/compiler-1` (its `requirements.txt` includes pytest).
 
-Live tests (need a running stack + App-01/execution configured):
+Live tests (need a running stack + an App machine and the execution backend configured):
 
 ```bash
 cd gateway
@@ -179,11 +194,14 @@ sudo lsof -i :80            # find the process, or change TRAEFIK_HTTP_PORT in .
 docker network create system3
 ```
 
-**/auth/* returns the website HTML instead of JSON**
-App-01 is not reachable at `APP1_URL`. Check:
+**/_api/auth/* returns the website HTML instead of JSON**
+Either the `/_api` route lost its backend or an app pool member is down.
+Check:
 ```bash
-curl -s http://<APP1_HOST>:8002/      # from the gateway machine
-docker compose logs traefik | tail    # "502 Bad Gateway" from app1-backend routes means App-01 is down
+curl -s http://<APP_IP>:8002/          # from the gateway machine — each pool member
+curl -s -X POST http://localhost/_api/auth/login -H 'Content-Type: application/json' -d '{}'
+                                       # JSON 422 = routing OK; HTML = app pool empty/down
+docker compose logs traefik | tail    # "502 Bad Gateway" on api-backend routes = member down
 ```
 
 **Container unhealthy**
@@ -206,22 +224,26 @@ cgroup-v2 notes live there).
 ```
 gateway/
 ├── docker-compose.yml        ← the Gateway machine stack (traefik + frontend + gateway-api)
-├── docker-compose.local.yml  ← one-machine demo (adds app-1 + compiler-1)
+├── docker-compose.local.yml  ← one-machine demo (adds app-1 + compiler-1; older routing)
 ├── .env.example              ← configuration template (copy to .env; never commit .env)
-├── DEPLOYMENT.md             ← multi-machine LAN guide
+├── DEPLOYMENT.md             ← multi-machine LAN reference
+├── dockerdemoup.sh           ← start any/all six stacks on one machine (co-located test)
+├── scripts/                  ← deploy/down per system, deploy-compiler, port guard
 ├── traefik/traefik.yml       ← Traefik static settings (entry points, providers, logs)
 ├── frontend/                 ← website container (builds dsc-recruit/apps/frontend)
 │   ├── Dockerfile
 │   └── nginx.conf
 ├── gateway-api/              ← FastAPI helper (health, sessions, /api/execute proxy)
 │   ├── Dockerfile
-│   ├── app/                  ← main.py, routers/, judge0_proxy.py, compiler_proxy.py
+│   ├── app/                  ← main.py, routers/, judge0_proxy.py, judge0_pool.py, …
 │   └── tests/
-├── app-1/                    ← App-01 standalone deployment (application backend)
-│   ├── Dockerfile            ← packages dsc-recruit/apps/backend as-is
+├── app-1/                    ← App-1 deployment (application backend + challenge-1)
+│   ├── Dockerfile / Dockerfile.challenge
 │   ├── docker-compose.yml
+│   ├── README.md
 │   └── .env.example
-├── judge0/                   ← Judge0 execution service (System 3; default backend)
+├── app-2/                    ← App-2 deployment (same backend + challenge-2)
+├── judge0/                   ← Judge0 execution nodes (Compiler-1/2/3; default backend)
 ├── compiler-1/               ← legacy code runner (off by default)
 ├── compiler_client/          ← small Python client for the legacy runner
 ├── monitoring/               ← optional Grafana/Prometheus dashboards
